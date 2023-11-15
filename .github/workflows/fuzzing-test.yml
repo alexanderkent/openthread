@@ -1,0 +1,15 @@
+name: Fuzzing Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    steps:
+      
+      - name: Build Fuzzers
+        uses: google/oss-fuzz/infra/cifuzz/actions/build_fuzzers@c0e4bb8d15a68b7f8cc731ea75523e48a2301bcf # master
+        with:
+         oss-fuzz-project-name: 'openthread'
+         dry-run: true
