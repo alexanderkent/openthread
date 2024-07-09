@@ -82,6 +82,7 @@ if (OT_POSIX_SECURE_SETTINGS)
     target_compile_definitions(ot-posix-config
         INTERFACE "OPENTHREAD_POSIX_CONFIG_SECURE_SETTINGS_ENABLE=1"
     )
+   set(SECURE_SETTINGS_SRC secure_settings.cpp)
 endif()
 
 option(OT_POSIX_RCP_HDLC_BUS "enable RCP HDLC bus" OFF)
@@ -153,6 +154,7 @@ add_library(openthread-posix
     udp.cpp
     utils.cpp
     virtual_time.cpp
+    ${SECURE_SETTINGS_SRC}
 )
 
 include(vendor.cmake)
