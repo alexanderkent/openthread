@@ -31,11 +31,9 @@
 #include "test_platform.h"
 #include "test_util.hpp"
 
-using namespace ot;
-
 namespace ot {
 
-ot::Instance   *sInstance;
+Instance       *sInstance;
 Ip6::Ip6       *sIp6;
 Lowpan::Lowpan *sLowpan;
 
@@ -105,6 +103,7 @@ void TestIphcVector::GetUncompressedStream(Message &aMessage)
 static void Init(void)
 {
     otMeshLocalPrefix meshLocalPrefix = {{0xfd, 0x00, 0xca, 0xfe, 0xfa, 0xce, 0x12, 0x34}};
+    OffsetRange       offsetRange;
 
     sInstance->Get<Mle::MleRouter>().SetMeshLocalPrefix(static_cast<Ip6::NetworkPrefix &>(meshLocalPrefix));
 
@@ -129,8 +128,10 @@ static void Init(void)
 
     SuccessOrQuit(message->AppendBytes(mockNetworkData, sizeof(mockNetworkData)));
 
+    offsetRange.Init(2, 0x20);
+
     IgnoreError(
-        sInstance->Get<NetworkData::Leader>().SetNetworkData(0, 0, NetworkData::kStableSubset, *message, 2, 0x20));
+        sInstance->Get<NetworkData::Leader>().SetNetworkData(0, 0, NetworkData::kStableSubset, *message, offsetRange));
 }
 
 /**
@@ -2091,9 +2092,9 @@ void TestLowpanFragmentHeader(void)
 
 int main(void)
 {
-    TestLowpanIphc();
-    TestLowpanMeshHeader();
-    TestLowpanFragmentHeader();
+    ot::TestLowpanIphc();
+    ot::TestLowpanMeshHeader();
+    ot::TestLowpanFragmentHeader();
 
     printf("All tests passed\n");
     return 0;

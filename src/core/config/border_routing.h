@@ -36,6 +36,16 @@
 #define CONFIG_BORDER_ROUTING_H_
 
 /**
+ * @addtogroup config-border-routing
+ *
+ * @brief
+ *   This module includes configuration variables for Border Routing Manager.
+ *
+ * @{
+ *
+ */
+
+/**
  * @def OPENTHREAD_CONFIG_BORDER_ROUTING_ENABLE
  *
  * Define to 1 to enable Border Routing Manager feature.
@@ -59,6 +69,23 @@
  */
 #ifndef OPENTHREAD_CONFIG_BORDER_ROUTING_USE_HEAP_ENABLE
 #define OPENTHREAD_CONFIG_BORDER_ROUTING_USE_HEAP_ENABLE 1
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_BORDER_ROUTING_TRACK_PEER_BR_INFO_ENABLE
+ *
+ * Define to 1 to allow the Routing Manager to track information (e.g., advertised prefixes) about peer Thread
+ * Border Routers that are connected to the same Thread network.
+ *
+ * When enabled, the Routing Manager will maintain a record of advertised RIO/PIO prefixes discovered from received
+ * Router Advertisements of peer BRs. These entries are disregarded in decision-making (e.g., selecting favored
+ * on-link prefix or determining which route to publish in the Thread Network Data).
+ *
+ * It is recommended to enable this feature alongside `OPENTHREAD_CONFIG_BORDER_ROUTING_USE_HEAP_ENABLE`.
+ *
+ */
+#ifndef OPENTHREAD_CONFIG_BORDER_ROUTING_TRACK_PEER_BR_INFO_ENABLE
+#define OPENTHREAD_CONFIG_BORDER_ROUTING_TRACK_PEER_BR_INFO_ENABLE OPENTHREAD_CONFIG_BORDER_ROUTING_USE_HEAP_ENABLE
 #endif
 
 /**
@@ -161,5 +188,10 @@
 #ifndef OPENTHREAD_CONFIG_BORDER_ROUTING_MOCK_PLAT_APIS_ENABLE
 #define OPENTHREAD_CONFIG_BORDER_ROUTING_MOCK_PLAT_APIS_ENABLE 0
 #endif
+
+/**
+ * @}
+ *
+ */
 
 #endif // CONFIG_BORDER_ROUTING_H_

@@ -26,15 +26,24 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef POSIX_PLATFORM_RADIO_HPP_
-#define POSIX_PLATFORM_RADIO_HPP_
+#ifndef OT_POSIX_PLATFORM_RADIO_HPP_
+#define OT_POSIX_PLATFORM_RADIO_HPP_
 
+#include "hdlc_interface.hpp"
+#include "logger.hpp"
+#include "radio_url.hpp"
+#include "rcp_caps_diag.hpp"
+#include "spi_interface.hpp"
+#include "spinel_manager.hpp"
+#include "vendor_interface.hpp"
 #include "common/code_utils.hpp"
 #include "lib/spinel/radio_spinel.hpp"
-#include "posix/platform/hdlc_interface.hpp"
-#include "posix/platform/radio_url.hpp"
-#include "posix/platform/spi_interface.hpp"
-#include "posix/platform/vendor_interface.hpp"
+#include "lib/spinel/spinel_driver.hpp"
+#if OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_ENABLE
+#ifdef OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_HEADER
+#include OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_HEADER
+#endif
+#endif
 
 namespace ot {
 namespace Posix {
@@ -43,9 +52,11 @@ namespace Posix {
  * Manages Thread radio.
  *
  */
-class Radio
+class Radio : public Logger<Radio>
 {
 public:
+    static const char kLogModuleName[]; ///< Module name used for logging.
+
     /**
      * Creates the radio manager.
      *
@@ -66,11 +77,7 @@ public:
      * @returns A reference to the radio's spinel interface instance.
      *
      */
-    Spinel::SpinelInterface &GetSpinelInterface(void)
-    {
-        OT_ASSERT(mSpinelInterface != nullptr);
-        return *mSpinelInterface;
-    }
+    Spinel::SpinelInterface &GetSpinelInterface(void) { return SpinelManager::GetSpinelManager().GetSpinelInterface(); }
 
     /**
      * Acts as an accessor to the radio spinel instance used by the radio.
@@ -80,14 +87,19 @@ public:
      */
     Spinel::RadioSpinel &GetRadioSpinel(void) { return mRadioSpinel; }
 
-private:
-#if OPENTHREAD_POSIX_VIRTUAL_TIME
-    void VirtualTimeInit(void);
+    /**
+     * Acts as an accessor to the RCP capability diagnostic instance used by the radio.
+     *
+     * @returns A reference to the RCP capability diagnostic instance.
+     *
+     */
+#if OPENTHREAD_POSIX_CONFIG_RCP_CAPS_DIAG_ENABLE
+    RcpCapsDiag &GetRcpCapsDiag(void) { return mRcpCapsDiag; }
 #endif
+
+private:
     void ProcessRadioUrl(const RadioUrl &aRadioUrl);
     void ProcessMaxPowerTable(const RadioUrl &aRadioUrl);
-
-    Spinel::SpinelInterface *CreateSpinelInterface(const char *aInterfaceName);
 
 #if OPENTHREAD_POSIX_CONFIG_SPINEL_HDLC_INTERFACE_ENABLE && OPENTHREAD_POSIX_CONFIG_SPINEL_SPI_INTERFACE_ENABLE
     static constexpr size_t kSpinelInterfaceRawSize = sizeof(ot::Posix::SpiInterface) > sizeof(ot::Posix::HdlcInterface)
@@ -103,14 +115,19 @@ private:
 #error "No Spinel interface is specified!"
 #endif
 
-    RadioUrl                 mRadioUrl;
-    Spinel::RadioSpinel      mRadioSpinel;
-    Spinel::SpinelInterface *mSpinelInterface;
+    RadioUrl mRadioUrl;
+#if OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_ENABLE
+    Spinel::VendorRadioSpinel mRadioSpinel;
+#else
+    Spinel::RadioSpinel     mRadioSpinel;
+#endif
 
-    OT_DEFINE_ALIGNED_VAR(mSpinelInterfaceRaw, kSpinelInterfaceRawSize, uint64_t);
+#if OPENTHREAD_POSIX_CONFIG_RCP_CAPS_DIAG_ENABLE
+    RcpCapsDiag mRcpCapsDiag;
+#endif
 };
 
 } // namespace Posix
 } // namespace ot
 
-#endif // POSIX_PLATFORM_RADIO_HPP_
+#endif // OT_POSIX_PLATFORM_RADIO_HPP_

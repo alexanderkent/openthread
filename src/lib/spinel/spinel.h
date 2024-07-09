@@ -78,16 +78,16 @@
  *
  *   The Interface Identifier (IID) is a number between 0 and 3, which
  *   is associated by the OS with a specific NCP. This allows the protocol
- *   to support up to 4 NCPs under same connection.
+ *   to support multiple networks under same connection.
  *
  *   The least significant bits of the header represent the Transaction
  *   Identifier (TID). The TID is used for correlating responses to the
  *   commands which generated them.
  *
  *   When a command is sent from the host, any reply to that command sent
- *   by the NCP will use the same value for the TID.  When the host
- *   receives a frame that matches the TID of the command it sent, it can
- *   easily recognize that frame as the actual response to that command.
+ *   by the NCP will use the same value for the IID and TID.  When the host
+ *   receives a frame that matches the IID and TID of the command it sent, it
+ *   can easily recognize that frame as the actual response to that command.
  *
  *   The TID value of zero (0) is used for commands to which a correlated
  *   response is not expected or needed, such as for unsolicited update
@@ -479,6 +479,8 @@
 /// Macro for generating bit masks using bit index from the spec
 #define SPINEL_BIT_MASK(bit_index, field_bit_count) ((1 << ((field_bit_count)-1)) >> (bit_index))
 
+#define SPINEL_BITS_PER_BYTE 8 // Number of bits in a byte
+
 // ----------------------------------------------------------------------------
 
 #if defined(__cplusplus)
@@ -512,6 +514,9 @@ enum
     SPINEL_STATUS_UNKNOWN_NEIGHBOR         = 22, ///< The neighbor is unknown.
     SPINEL_STATUS_NOT_CAPABLE              = 23, ///< The target is not capable of handling requested operation.
     SPINEL_STATUS_RESPONSE_TIMEOUT         = 24, ///< No response received from remote node
+    SPINEL_STATUS_SWITCHOVER_DONE =
+        25, ///< Radio interface switch completed successfully (SPINEL_PROP_MULTIPAN_ACTIVE_INTERFACE)
+    SPINEL_STATUS_SWITCHOVER_FAILED = 26, ///< Radio interface switch failed (SPINEL_PROP_MULTIPAN_ACTIVE_INTERFACE)
 
     SPINEL_STATUS_JOIN__BEGIN = 104,
 
@@ -593,6 +598,7 @@ typedef enum
     SPINEL_NET_ROLE_CHILD    = 1,
     SPINEL_NET_ROLE_ROUTER   = 2,
     SPINEL_NET_ROLE_LEADER   = 3,
+    SPINEL_NET_ROLE_DISABLED = 4,
 } spinel_net_role_t;
 
 typedef enum
@@ -601,6 +607,7 @@ typedef enum
     SPINEL_IPV6_ICMP_PING_OFFLOAD_UNICAST_ONLY   = 1,
     SPINEL_IPV6_ICMP_PING_OFFLOAD_MULTICAST_ONLY = 2,
     SPINEL_IPV6_ICMP_PING_OFFLOAD_ALL            = 3,
+    SPINEL_IPV6_ICMP_PING_OFFLOAD_RLOC_ALOC_ONLY = 4,
 } spinel_ipv6_icmp_ping_offload_mode_t;
 
 typedef enum
@@ -883,6 +890,7 @@ typedef struct
 
 typedef int          spinel_ssize_t;
 typedef unsigned int spinel_size_t;
+typedef uint8_t      spinel_iid_t;
 typedef uint8_t      spinel_tid_t;
 
 enum
@@ -1288,6 +1296,7 @@ enum
     SPINEL_CAP_RCP_API_VERSION          = (SPINEL_CAP_RCP__BEGIN + 0),
     SPINEL_CAP_RCP_MIN_HOST_API_VERSION = (SPINEL_CAP_RCP__BEGIN + 1),
     SPINEL_CAP_RCP_RESET_TO_BOOTLOADER  = (SPINEL_CAP_RCP__BEGIN + 2),
+    SPINEL_CAP_RCP_LOG_CRASH_DUMP       = (SPINEL_CAP_RCP__BEGIN + 3),
     SPINEL_CAP_RCP__END                 = 80,
 
     SPINEL_CAP_OPENTHREAD__BEGIN       = 512,
@@ -1448,8 +1457,6 @@ enum
     /** Format: 'C` - Read-only
      *
      * Provides number of interfaces.
-     *
-     * Currently always reads as 1.
      *
      */
     SPINEL_PROP_INTERFACE_COUNT = 6,
@@ -2292,6 +2299,7 @@ enum
      *  SPINEL_NET_ROLE_CHILD    = 1,
      *  SPINEL_NET_ROLE_ROUTER   = 2,
      *  SPINEL_NET_ROLE_LEADER   = 3,
+     *  SPINEL_NET_ROLE_DISABLED = 4,
      *
      */
     SPINEL_PROP_NET_ROLE = SPINEL_PROP_NET__BEGIN + 3,
@@ -2361,6 +2369,12 @@ enum
      *
      */
     SPINEL_PROP_NET_PSKC = SPINEL_PROP_NET__BEGIN + 11,
+
+    /// Instruct NCP to leave the current network gracefully
+    /** Format Empty - Write only
+     *
+     */
+    SPINEL_PROP_NET_LEAVE_GRACEFULLY = SPINEL_PROP_NET__BEGIN + 12,
 
     SPINEL_PROP_NET__END = 0x50,
 
@@ -3451,6 +3465,7 @@ enum
      *   SPINEL_IPV6_ICMP_PING_OFFLOAD_UNICAST_ONLY   = 1
      *   SPINEL_IPV6_ICMP_PING_OFFLOAD_MULTICAST_ONLY = 2
      *   SPINEL_IPV6_ICMP_PING_OFFLOAD_ALL            = 3
+     *   SPINEL_IPV6_ICMP_PING_OFFLOAD_RLOC_ALOC_ONLY = 4
      *
      * Default value is `NET_IPV6_ICMP_PING_OFFLOAD_DISABLED`.
      *
@@ -4391,6 +4406,16 @@ enum
      */
     SPINEL_PROP_RCP_MIN_HOST_API_VERSION = SPINEL_PROP_RCP__BEGIN + 1,
 
+    /// Crash Dump
+    /** Format: Empty : Write only
+     *
+     * Required capability: SPINEL_CAP_RADIO and SPINEL_CAP_RCP_LOG_CRASH_DUMP.
+     *
+     * Writing to this property instructs the RCP to log a crash dump if available.
+     *
+     */
+    SPINEL_PROP_RCP_LOG_CRASH_DUMP = SPINEL_PROP_RCP__BEGIN + 2,
+
     SPINEL_PROP_RCP__END = 0xFF,
 
     SPINEL_PROP_INTERFACE__BEGIN = 0x100,
@@ -4861,6 +4886,24 @@ enum
 
     SPINEL_PROP_RCP_EXT__END = 0x900,
 
+    SPINEL_PROP_MULTIPAN__BEGIN = 0x900,
+
+    /// Multipan interface selection.
+    /** Format: `C`
+     * Type: Read-Write
+     *
+     * `C`: b[0-1] - Interface id.
+     *      b[7]   - 1: Complete pending radio operation, 0: immediate(force) switch.
+     *
+     * This feature gets or sets the radio interface to be used in multipan configuration
+     *
+     * Default value: 0
+     *
+     */
+    SPINEL_PROP_MULTIPAN_ACTIVE_INTERFACE = SPINEL_PROP_MULTIPAN__BEGIN + 0,
+
+    SPINEL_PROP_MULTIPAN__END = 0x910,
+
     SPINEL_PROP_NEST__BEGIN = 0x3BC0,
 
     SPINEL_PROP_NEST_STREAM_MFG = SPINEL_PROP_NEST__BEGIN + 0,
@@ -4955,11 +4998,15 @@ typedef uint32_t spinel_prop_key_t;
 
 #define SPINEL_HEADER_IID_SHIFT 4
 #define SPINEL_HEADER_IID_MASK (3 << SPINEL_HEADER_IID_SHIFT)
+#define SPINEL_HEADER_IID(iid) (static_cast<uint8_t>((iid) << SPINEL_HEADER_IID_SHIFT))
+#define SPINEL_HEADER_IID_MAX 3
 
-#define SPINEL_HEADER_IID_0 (0 << SPINEL_HEADER_IID_SHIFT)
-#define SPINEL_HEADER_IID_1 (1 << SPINEL_HEADER_IID_SHIFT)
-#define SPINEL_HEADER_IID_2 (2 << SPINEL_HEADER_IID_SHIFT)
-#define SPINEL_HEADER_IID_3 (3 << SPINEL_HEADER_IID_SHIFT)
+#define SPINEL_HEADER_IID_0 SPINEL_HEADER_IID(0)
+#define SPINEL_HEADER_IID_1 SPINEL_HEADER_IID(1)
+#define SPINEL_HEADER_IID_2 SPINEL_HEADER_IID(2)
+#define SPINEL_HEADER_IID_3 SPINEL_HEADER_IID(3)
+
+#define SPINEL_HEADER_INVALID_IID 0xFF
 
 #define SPINEL_HEADER_GET_IID(x) (((x)&SPINEL_HEADER_IID_MASK) >> SPINEL_HEADER_IID_SHIFT)
 #define SPINEL_HEADER_GET_TID(x) (spinel_tid_t)(((x)&SPINEL_HEADER_TID_MASK) >> SPINEL_HEADER_TID_SHIFT)
@@ -4973,6 +5020,10 @@ typedef uint32_t spinel_prop_key_t;
 #define SPINEL_BEACON_THREAD_FLAG_JOINABLE (1 << 0)
 
 #define SPINEL_BEACON_THREAD_FLAG_NATIVE (1 << 3)
+
+#define SPINEL_MULTIPAN_INTERFACE_SOFT_SWITCH_SHIFT 7
+#define SPINEL_MULTIPAN_INTERFACE_SOFT_SWITCH_MASK (1 << SPINEL_MULTIPAN_INTERFACE_SOFT_SWITCH_SHIFT)
+#define SPINEL_MULTIPAN_INTERFACE_ID_MASK 0x03
 
 // ----------------------------------------------------------------------------
 

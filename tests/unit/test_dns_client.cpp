@@ -208,7 +208,7 @@ void InitTest(void)
     otOperationalDatasetTlvs datasetTlvs;
 
     SuccessOrQuit(otDatasetCreateNewNetwork(sInstance, &dataset));
-    SuccessOrQuit(otDatasetConvertToTlvs(&dataset, &datasetTlvs));
+    otDatasetConvertToTlvs(&dataset, &datasetTlvs);
     SuccessOrQuit(otDatasetSetActiveTlvs(sInstance, &datasetTlvs));
 
     SuccessOrQuit(otIp6SetEnabled(sInstance, true));
@@ -357,10 +357,10 @@ struct BrowseInfo
 {
     void Reset(void) { mCallbackCount = 0; }
 
-    uint16_t mCallbackCount;
-    Error    mError;
-    char     mServiceName[Dns::Name::kMaxNameSize];
-    uint16_t mNumInstances;
+    uint16_t          mCallbackCount;
+    Error             mError;
+    Dns::Name::Buffer mServiceName;
+    uint16_t          mNumInstances;
 };
 
 static BrowseInfo sBrowseInfo;
@@ -384,8 +384,8 @@ void BrowseCallback(otError aError, const otDnsBrowseResponse *aResponse, void *
 
     for (uint16_t index = 0;; index++)
     {
-        char  instLabel[Dns::Name::kMaxLabelSize];
-        Error error;
+        Dns::Name::LabelBuffer instLabel;
+        Error                  error;
 
         error = response.GetServiceInstance(index, instLabel, sizeof(instLabel));
 
@@ -423,7 +423,7 @@ struct ResolveServiceInfo
     uint16_t                 mCallbackCount;
     Error                    mError;
     Dns::Client::ServiceInfo mInfo;
-    char                     mNameBuffer[Dns::Name::kMaxNameSize];
+    Dns::Name::Buffer        mNameBuffer;
     uint8_t                  mTxtBuffer[kMaxTxtBuffer];
     Ip6::Address             mHostAddresses[kMaxHostAddresses];
     uint8_t                  mNumHostAddresses;
@@ -434,8 +434,8 @@ static ResolveServiceInfo sResolveServiceInfo;
 void ServiceCallback(otError aError, const otDnsServiceResponse *aResponse, void *aContext)
 {
     const Dns::Client::ServiceResponse &response = AsCoreType(aResponse);
-    char                                instLabel[Dns::Name::kMaxLabelSize];
-    char                                serviceName[Dns::Name::kMaxNameSize];
+    Dns::Name::LabelBuffer              instLabel;
+    Dns::Name::Buffer                   serviceName;
 
     Log("ServiceCallback");
     Log("   Error: %s", ErrorToString(aError));
@@ -671,8 +671,8 @@ void TestDnsClient(void)
 
     Log("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ");
 
-    Log("Set TestMode on server to only accept single question");
-    dnsServer->SetTestMode(Dns::ServiceDiscovery::Server::kTestModeSingleQuestionOnly);
+    Log("Set TestMode on server to reject multi-question queries and send error");
+    dnsServer->SetTestMode(Dns::ServiceDiscovery::Server::kTestModeRejectMultiQuestionQuery);
 
     Log("ResolveService(%s,%s) with ServiceMode %s", kInstance1Label, kService1FullName,
         ServiceModeToString(Dns::Client::QueryConfig::kServiceModeSrvTxtOptimize));
@@ -703,6 +703,48 @@ void TestDnsClient(void)
 
     VerifyOrQuit(sResolveServiceInfo.mCallbackCount == 1);
     VerifyOrQuit(sResolveServiceInfo.mError != kErrorNone);
+
+    dnsServer->SetTestMode(Dns::ServiceDiscovery::Server::kTestModeDisabled);
+
+    Log("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ");
+
+    Log("Set TestMode on server to ignore multi-question queries (send no response)");
+    dnsServer->SetTestMode(Dns::ServiceDiscovery::Server::kTestModeIgnoreMultiQuestionQuery);
+
+    Log("ResolveService(%s,%s) with ServiceMode %s", kInstance1Label, kService1FullName,
+        ServiceModeToString(Dns::Client::QueryConfig::kServiceModeSrvTxtOptimize));
+
+    queryConfig.Clear();
+    queryConfig.mServiceMode = static_cast<otDnsServiceMode>(Dns::Client::QueryConfig::kServiceModeSrvTxtOptimize);
+
+    sResolveServiceInfo.Reset();
+    SuccessOrQuit(
+        dnsClient->ResolveService(kInstance1Label, kService1FullName, ServiceCallback, sInstance, &queryConfig));
+
+    AdvanceTime(10 * 1000); // Wait longer than client response timeout.
+
+    VerifyOrQuit(sResolveServiceInfo.mCallbackCount == 1);
+    SuccessOrQuit(sResolveServiceInfo.mError);
+
+    // Use `kServiceModeSrvTxt` and check that server does ignore two questions.
+
+    Log("ResolveService(%s,%s) with ServiceMode %s", kInstance1Label, kService1FullName,
+        ServiceModeToString(Dns::Client::QueryConfig::kServiceModeSrvTxt));
+
+    queryConfig.Clear();
+    queryConfig.mServiceMode = static_cast<otDnsServiceMode>(Dns::Client::QueryConfig::kServiceModeSrvTxt);
+
+    sResolveServiceInfo.Reset();
+    SuccessOrQuit(
+        dnsClient->ResolveService(kInstance1Label, kService1FullName, ServiceCallback, sInstance, &queryConfig));
+
+    // Wait for the client to time out after exhausting all retry attempts, and
+    // ensure that a `kErrorResponseTimeout` error is reported.
+
+    AdvanceTime(45 * 1000);
+
+    VerifyOrQuit(sResolveServiceInfo.mCallbackCount == 1);
+    VerifyOrQuit(sResolveServiceInfo.mError == kErrorResponseTimeout);
 
     dnsServer->SetTestMode(Dns::ServiceDiscovery::Server::kTestModeDisabled);
 
@@ -832,7 +874,7 @@ void TestDnsClient(void)
     Log("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ");
     Log("Set TestMode on server to not include any RR in additional section AND to only accept single question");
     dnsServer->SetTestMode(Dns::ServiceDiscovery::Server::kTestModeEmptyAdditionalSection +
-                           Dns::ServiceDiscovery::Server::kTestModeSingleQuestionOnly);
+                           Dns::ServiceDiscovery::Server::kTestModeRejectMultiQuestionQuery);
 
     Log("ResolveServiceAndHostAddress(%s,%s) with ServiceMode: %s", kInstance1Label, kService1FullName,
         ServiceModeToString(Dns::Client::QueryConfig::kServiceModeSrvTxtOptimize));
@@ -912,8 +954,8 @@ void TestDnsClient(void)
 
 //----------------------------------------------------------------------------------------------------------------------
 
-char sLastSubscribeName[Dns::Name::kMaxNameSize];
-char sLastUnsubscribeName[Dns::Name::kMaxNameSize];
+Dns::Name::Buffer sLastSubscribeName;
+Dns::Name::Buffer sLastUnsubscribeName;
 
 void QuerySubscribe(void *aContext, const char *aFullName)
 {

@@ -39,6 +39,7 @@
 #include "common/code_utils.hpp"
 #include "common/locator_getters.hpp"
 #include "common/log.hpp"
+#include "common/numeric_limits.hpp"
 #include "common/random.hpp"
 #include "common/settings.hpp"
 #include "crypto/sha256.hpp"
@@ -54,8 +55,9 @@ Slaac::Slaac(Instance &aInstance)
     : InstanceLocator(aInstance)
     , mEnabled(true)
     , mFilter(nullptr)
+    , mTimer(aInstance)
 {
-    memset(mAddresses, 0, sizeof(mAddresses));
+    ClearAllBytes(mSlaacAddresses);
 }
 
 void Slaac::Enable(void)
@@ -76,6 +78,8 @@ void Slaac::Disable(void)
     VerifyOrExit(mEnabled);
 
     RemoveAllAddresses();
+    mTimer.Stop();
+
     LogInfo("Disabled");
     mEnabled = false;
 
@@ -91,29 +95,43 @@ void Slaac::SetFilter(PrefixFilter aFilter)
     LogInfo("Filter %s", (mFilter != nullptr) ? "updated" : "disabled");
 
     VerifyOrExit(mEnabled);
-    RemoveAddresses();
+    RemoveOrDeprecateAddresses();
     AddAddresses();
 
 exit:
     return;
 }
 
-bool Slaac::ShouldUseForSlaac(const NetworkData::OnMeshPrefixConfig &aConfig) const
+Error Slaac::FindDomainIdFor(const Ip6::Address &aAddress, uint8_t &aDomainId) const
 {
-    bool shouldUse = false;
+    Error error = kErrorNotFound;
 
-    VerifyOrExit(aConfig.mSlaac && !aConfig.mDp);
-    VerifyOrExit(aConfig.GetPrefix().GetLength() == Ip6::NetworkPrefix::kLength);
-
-    if (mFilter != nullptr)
+    for (const SlaacAddress &slaacAddr : mSlaacAddresses)
     {
-        VerifyOrExit(!mFilter(&GetInstance(), &aConfig.GetPrefix()));
+        if (!slaacAddr.IsInUse() || !slaacAddr.IsDeprecating())
+        {
+            continue;
+        }
+
+        if (aAddress.PrefixMatch(slaacAddr.GetAddress()) >= Ip6::NetworkPrefix::kLength)
+        {
+            aDomainId = slaacAddr.GetDomainId();
+            error     = kErrorNone;
+            break;
+        }
     }
 
-    shouldUse = true;
+    return error;
+}
 
-exit:
-    return shouldUse;
+bool Slaac::IsSlaac(const NetworkData::OnMeshPrefixConfig &aConfig) const
+{
+    return aConfig.mSlaac && !aConfig.mDp && (aConfig.GetPrefix().GetLength() == Ip6::NetworkPrefix::kLength);
+}
+
+bool Slaac::IsFiltered(const NetworkData::OnMeshPrefixConfig &aConfig) const
+{
+    return (mFilter != nullptr) ? mFilter(&GetInstance(), &aConfig.GetPrefix()) : false;
 }
 
 void Slaac::HandleNotifierEvents(Events aEvents)
@@ -122,7 +140,7 @@ void Slaac::HandleNotifierEvents(Events aEvents)
 
     if (aEvents.Contains(kEventThreadNetdataChanged))
     {
-        RemoveAddresses();
+        RemoveOrDeprecateAddresses();
         AddAddresses();
         ExitNow();
     }
@@ -153,17 +171,18 @@ bool Slaac::DoesConfigMatchNetifAddr(const NetworkData::OnMeshPrefixConfig &aCon
             (aAddr.GetAddress().MatchesPrefix(aConfig.GetPrefix())));
 }
 
-void Slaac::RemoveAddresses(void)
+void Slaac::RemoveOrDeprecateAddresses(void)
 {
-    // Remove any SLAAC addresses with no matching on-mesh prefix.
+    // Remove or deprecate any SLAAC addresses with no matching on-mesh
+    // prefix in Network Data.
 
-    for (Ip6::Netif::UnicastAddress &slaacAddr : mAddresses)
+    for (SlaacAddress &slaacAddr : mSlaacAddresses)
     {
         NetworkData::Iterator           iterator;
         NetworkData::OnMeshPrefixConfig config;
         bool                            found = false;
 
-        if (!slaacAddr.mValid)
+        if (!slaacAddr.IsInUse())
         {
             continue;
         }
@@ -172,37 +191,61 @@ void Slaac::RemoveAddresses(void)
 
         while (Get<NetworkData::Leader>().GetNextOnMeshPrefix(iterator, config) == kErrorNone)
         {
-            if (ShouldUseForSlaac(config) && DoesConfigMatchNetifAddr(config, slaacAddr))
+            if (IsSlaac(config) && DoesConfigMatchNetifAddr(config, slaacAddr))
             {
                 found = true;
                 break;
             }
         }
 
-        if (!found)
+        if (found)
         {
-            RemoveAddress(slaacAddr);
+            if (IsFiltered(config))
+            {
+                RemoveAddress(slaacAddr);
+            }
+        }
+        else if (!slaacAddr.IsDeprecating())
+        {
+            if (slaacAddr.mPreferred)
+            {
+                DeprecateAddress(slaacAddr);
+            }
+            else
+            {
+                RemoveAddress(slaacAddr);
+            }
         }
     }
+}
+
+void Slaac::DeprecateAddress(SlaacAddress &aAddress)
+{
+    LogAddress(kDeprecating, aAddress);
+
+    aAddress.SetExpirationTime(TimerMilli::GetNow() + kDeprecationInterval);
+    mTimer.FireAtIfEarlier(aAddress.GetExpirationTime());
+
+    Get<ThreadNetif>().UpdatePreferredFlagOn(aAddress, false);
 }
 
 void Slaac::RemoveAllAddresses(void)
 {
-    for (Ip6::Netif::UnicastAddress &slaacAddr : mAddresses)
+    for (SlaacAddress &slaacAddr : mSlaacAddresses)
     {
-        if (slaacAddr.mValid)
+        if (slaacAddr.IsInUse())
         {
             RemoveAddress(slaacAddr);
         }
     }
 }
 
-void Slaac::RemoveAddress(Ip6::Netif::UnicastAddress &aAddress)
+void Slaac::RemoveAddress(SlaacAddress &aAddress)
 {
-    LogInfo("Removing %s", aAddress.GetAddress().ToString().AsCString());
+    LogAddress(kRemoving, aAddress);
 
     Get<ThreadNetif>().RemoveUnicastAddress(aAddress);
-    aAddress.mValid = false;
+    aAddress.MarkAsNotInUse();
 }
 
 void Slaac::AddAddresses(void)
@@ -218,7 +261,27 @@ void Slaac::AddAddresses(void)
     {
         bool found = false;
 
-        if (!ShouldUseForSlaac(config))
+        if (!IsSlaac(config) || IsFiltered(config))
+        {
+            continue;
+        }
+
+        for (SlaacAddress &slaacAddr : mSlaacAddresses)
+        {
+            if (slaacAddr.IsInUse() && DoesConfigMatchNetifAddr(config, slaacAddr))
+            {
+                if (slaacAddr.IsDeprecating() && config.mPreferred)
+                {
+                    slaacAddr.MarkAsNotDeprecating();
+                    Get<ThreadNetif>().UpdatePreferredFlagOn(slaacAddr, true);
+                }
+
+                found = true;
+                break;
+            }
+        }
+
+        if (found)
         {
             continue;
         }
@@ -241,35 +304,81 @@ void Slaac::AddAddresses(void)
 
 void Slaac::AddAddressFor(const NetworkData::OnMeshPrefixConfig &aConfig)
 {
-    Ip6::Netif::UnicastAddress *newAddress = nullptr;
-    uint8_t                     dadCounter = 0;
+    SlaacAddress *newAddress = nullptr;
+    uint8_t       dadCounter = 0;
+    uint8_t       domainId   = 0;
 
-    for (Ip6::Netif::UnicastAddress &slaacAddr : mAddresses)
+    for (SlaacAddress &slaacAddr : mSlaacAddresses)
     {
-        if (!slaacAddr.mValid)
+        // If all address entries are in-use, and we have any
+        // deprecating addresses, we select one with earliest
+        // expiration time.
+
+        if (!slaacAddr.IsInUse())
         {
             newAddress = &slaacAddr;
             break;
+        }
+
+        if (slaacAddr.IsDeprecating())
+        {
+            if ((newAddress == nullptr) || slaacAddr.GetExpirationTime() < newAddress->GetExpirationTime())
+            {
+                newAddress = &slaacAddr;
+            }
         }
     }
 
     if (newAddress == nullptr)
     {
-        LogWarn("Failed to add - already have max %u addresses", kNumAddresses);
+        LogWarn("Failed to add - already have max %u addresses", kNumSlaacAddresses);
         ExitNow();
     }
 
+    if (newAddress->IsInUse())
+    {
+        RemoveAddress(*newAddress);
+    }
+
+    newAddress->MarkAsNotDeprecating();
     newAddress->InitAsSlaacOrigin(aConfig.mOnMesh ? aConfig.GetPrefix().mLength : 128, aConfig.mPreferred);
     newAddress->GetAddress().SetPrefix(aConfig.GetPrefix());
 
+    IgnoreError(Get<NetworkData::Leader>().FindDomainIdFor(aConfig.GetPrefix(), domainId));
+    newAddress->SetDomainId(domainId);
+
     IgnoreError(GenerateIid(*newAddress, dadCounter));
 
-    LogInfo("Adding address %s", newAddress->GetAddress().ToString().AsCString());
+    LogAddress(kAdding, *newAddress);
 
     Get<ThreadNetif>().AddUnicastAddress(*newAddress);
 
 exit:
     return;
+}
+
+void Slaac::HandleTimer(void)
+{
+    NextFireTime nextTime;
+
+    for (SlaacAddress &slaacAddr : mSlaacAddresses)
+    {
+        if (!slaacAddr.IsInUse() || !slaacAddr.IsDeprecating())
+        {
+            continue;
+        }
+
+        if (slaacAddr.GetExpirationTime() <= nextTime.GetNow())
+        {
+            RemoveAddress(slaacAddr);
+        }
+        else
+        {
+            nextTime.UpdateIfEarlier(slaacAddr.GetExpirationTime());
+        }
+    }
+
+    mTimer.FireAtIfEarlier(nextTime);
 }
 
 Error Slaac::GenerateIid(Ip6::Netif::UnicastAddress &aAddress, uint8_t &aDadCounter) const
@@ -303,7 +412,7 @@ Error Slaac::GenerateIid(Ip6::Netif::UnicastAddress &aAddress, uint8_t &aDadCoun
     for (uint16_t count = 0; count < kMaxIidCreationAttempts; count++, aDadCounter++)
     {
         sha256.Start();
-        sha256.Update(aAddress.mAddress.mFields.m8, BitVectorBytes(aAddress.mPrefixLength));
+        sha256.Update(aAddress.mAddress.mFields.m8, BytesForBitSize(aAddress.mPrefixLength));
 
         sha256.Update(netIface);
         sha256.Update(aDadCounter);
@@ -327,6 +436,25 @@ Error Slaac::GenerateIid(Ip6::Netif::UnicastAddress &aAddress, uint8_t &aDadCoun
 exit:
     return error;
 }
+
+#if OT_SHOULD_LOG_AT(OT_LOG_LEVEL_INFO)
+void Slaac::LogAddress(Action aAction, const SlaacAddress &aAddress)
+{
+    static const char *const kActionStrings[] = {
+        "Adding",      // (0) kAdding
+        "Removing",    // (1) kRemoving
+        "Deprecating", // (2) kDeprecating
+    };
+
+    static_assert(kAdding == 0, "kAdding value is incorrect");
+    static_assert(kRemoving == 1, "kRemoving value is incorrect");
+    static_assert(kDeprecating == 2, "kDeprecating value is incorrect");
+
+    LogInfo("%s %s", kActionStrings[aAction], aAddress.GetAddress().ToString().AsCString());
+}
+#else
+void Slaac::LogAddress(Action, const SlaacAddress &) {}
+#endif
 
 void Slaac::GetIidSecretKey(IidSecretKey &aKey) const
 {

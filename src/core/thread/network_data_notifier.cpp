@@ -57,7 +57,7 @@ Notifier::Notifier(Instance &aInstance)
     , mNetDataFullTask(aInstance)
 #endif
     , mNextDelay(0)
-    , mOldRloc(Mac::kShortAddrInvalid)
+    , mOldRloc(Mle::kInvalidRloc16)
     , mWaitingForResponse(false)
 #if OPENTHREAD_FTD && OPENTHREAD_CONFIG_BORDER_ROUTER_ENABLE && OPENTHREAD_CONFIG_BORDER_ROUTER_REQUEST_ROUTER_ROLE
     , mDidRequestRouterRoleUpgrade(false)
@@ -129,15 +129,16 @@ Error Notifier::RemoveStaleChildEntries(void)
     // - `kErrorNoBufs` if could not allocate message to send message.
     // - `kErrorNotFound` if no stale child entries were found.
 
-    Error    error    = kErrorNotFound;
-    Iterator iterator = kIteratorInit;
-    uint16_t rloc16;
+    Error error = kErrorNotFound;
+    Rlocs rlocs;
 
     VerifyOrExit(Get<Mle::MleRouter>().IsRouterOrLeader());
 
-    while (Get<Leader>().GetNextServer(iterator, rloc16) == kErrorNone)
+    Get<Leader>().FindRlocs(kAnyBrOrServer, kAnyRole, rlocs);
+
+    for (uint16_t rloc16 : rlocs)
     {
-        if (!Mle::IsActiveRouter(rloc16) && Mle::RouterIdMatch(Get<Mle::MleRouter>().GetRloc16(), rloc16) &&
+        if (Mle::IsChildRloc16(rloc16) && Get<Mle::Mle>().HasMatchingRouterIdWith(rloc16) &&
             Get<ChildTable>().FindChild(rloc16, Child::kInStateValid) == nullptr)
         {
             error = SendServerDataNotification(rloc16);
@@ -176,7 +177,7 @@ Error Notifier::UpdateInconsistentData(void)
 
     if (mOldRloc == deviceRloc)
     {
-        mOldRloc = Mac::kShortAddrInvalid;
+        mOldRloc = Mle::kInvalidRloc16;
     }
 
     SuccessOrExit(error = SendServerDataNotification(mOldRloc, &Get<Local>()));
@@ -210,12 +211,12 @@ Error Notifier::SendServerDataNotification(uint16_t aOldRloc16, const NetworkDat
 #endif
     }
 
-    if (aOldRloc16 != Mac::kShortAddrInvalid)
+    if (aOldRloc16 != Mle::kInvalidRloc16)
     {
         SuccessOrExit(error = Tlv::Append<ThreadRloc16Tlv>(*message, aOldRloc16));
     }
 
-    IgnoreError(messageInfo.SetSockAddrToRlocPeerAddrToLeaderAloc());
+    messageInfo.SetSockAddrToRlocPeerAddrToLeaderAloc();
     SuccessOrExit(error = Get<Tmf::Agent>().SendMessage(*message, messageInfo, HandleCoapResponse, this));
 
     LogInfo("Sent %s", UriToString<kUriServerData>());

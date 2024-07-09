@@ -49,6 +49,7 @@
 #include "crypto/ecdsa.hpp"
 #include "net/dns_types.hpp"
 #include "net/ip6.hpp"
+#include "net/netif.hpp"
 #include "net/udp6.hpp"
 #include "thread/network_data_service.hpp"
 
@@ -71,6 +72,7 @@ namespace Srp {
 class Client : public InstanceLocator, private NonCopyable
 {
     friend class ot::Notifier;
+    friend class ot::Ip6::Netif;
 
     using DnsSrpUnicast = NetworkData::Service::DnsSrpUnicast;
     using DnsSrpAnycast = NetworkData::Service::DnsSrpAnycast;
@@ -167,7 +169,7 @@ public:
 
     private:
         void SetName(const char *aName) { mName = aName; }
-        void SetState(ItemState aState);
+        bool SetState(ItemState aState);
         void SetAddresses(const Ip6::Address *aAddresses, uint8_t aNumAddresses);
         void EnableAutoAddress(void);
     };
@@ -303,7 +305,7 @@ public:
         static constexpr uint32_t kAppendedInMsgFlag = (1U << 31);
         static constexpr uint32_t kLeaseMask         = ~kAppendedInMsgFlag;
 
-        void      SetState(ItemState aState);
+        bool      SetState(ItemState aState);
         TimeMilli GetLeaseRenewTime(void) const { return TimeMilli(mData); }
         void      SetLeaseRenewTime(TimeMilli aTime) { mData = aTime.GetValue(); }
         bool      IsAppendedInMessage(void) const { return mLease & kAppendedInMsgFlag; }
@@ -788,6 +790,17 @@ public:
      *
      */
     bool GetUseShortLeaseOption(void) const { return mUseShortLeaseOption; }
+
+    /**
+     * Set the next DNS message ID for client to use.
+     *
+     * This is intended for testing only.
+     *
+     * @pram[in] aMessageId  A message ID.
+     *
+     */
+    void SetNextMessageId(uint16_t aMessageId) { mNextMessageId = aMessageId; }
+
 #endif // OPENTHREAD_CONFIG_REFERENCE_DEVICE_ENABLE
 
 private:
@@ -816,6 +829,9 @@ private:
     // to renew the lease. Value is in seconds.
     static constexpr uint32_t kLeaseRenewGuardInterval = OPENTHREAD_CONFIG_SRP_CLIENT_LEASE_RENEW_GUARD_INTERVAL;
 
+    // Lease renew time jitter (in msec).
+    static constexpr uint16_t kLeaseRenewJitter = 15 * 1000; // 15 second
+
     // Max allowed lease time to avoid timer roll-over (~24.8 days).
     static constexpr uint32_t kMaxLease = (Timer::kMaxDelay / 1000) - 1;
 
@@ -842,13 +858,28 @@ private:
         OPENTHREAD_CONFIG_SRP_CLIENT_EARLY_LEASE_RENEW_FACTOR_DENOMINATOR;
 
     // -------------------------------
-    // When there is a change (e.g., a new service is added/removed)
-    // that requires an update, the SRP client will wait for a short
-    // delay as specified by `kUpdateTxDelay` before sending an SRP
-    // update to server. This allows the user to provide more change
-    // that are then all sent in same update message.
-    static constexpr uint32_t kUpdateTxMinDelay = OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MIN_DELAY; // in msec.
-    static constexpr uint32_t kUpdateTxMaxDelay = OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MAX_DELAY; // in msec.
+    // TX jitter constants
+    //
+    // When changes trigger a new SRP update message transmission a random
+    // jitter delay is applied before sending the update message to server.
+    // This can occur due to changes in client services or host info,
+    // or `AutoStart` selecting a server for the first time or switching
+    // to a new server thus requiring re-registration.
+    //
+    // The constants below specify jitter ranges applied based on
+    // different trigger reasons. All values are in milliseconds.
+    // Also see `TxJitter` class.
+
+    static constexpr uint32_t kMinTxJitter                  = 10;
+    static constexpr uint32_t kMaxTxJitterDefault           = 500;
+    static constexpr uint32_t kMaxTxJitterOnDeviceReboot    = 700;
+    static constexpr uint32_t kMaxTxJitterOnServerStart     = 10 * Time::kOneSecondInMsec;
+    static constexpr uint32_t kMaxTxJitterOnServerRestart   = 10 * Time::kOneSecondInMsec;
+    static constexpr uint32_t kMaxTxJitterOnServerSwitch    = 10 * Time::kOneSecondInMsec;
+    static constexpr uint32_t kMaxTxJitterOnSlaacAddrAdd    = 10 * Time::kOneSecondInMsec;
+    static constexpr uint32_t kMaxTxJitterOnSlaacAddrRemove = 10 * Time::kOneSecondInMsec;
+
+    static constexpr uint32_t kGuardTimeAfterAttachToUseShorterTxJitter = 1000;
 
     // -------------------------------
     // Retry related constants
@@ -934,16 +965,47 @@ private:
         kForServicesAppendedInMessage,
     };
 
+    class TxJitter : public Clearable<TxJitter>
+    {
+        // Manages the random TX jitter to use when sending SRP update
+        // messages.
+
+    public:
+        enum Reason
+        {
+            kOnDeviceReboot,
+            kOnServerStart,
+            kOnServerRestart,
+            kOnServerSwitch,
+            kOnSlaacAddrAdd,
+            kOnSlaacAddrRemove,
+        };
+
+        TxJitter(void) { Clear(); }
+        void     Request(Reason aReason);
+        uint32_t DetermineDelay(void);
+
+    private:
+        static const uint32_t kMaxJitters[];
+#if OT_SHOULD_LOG_AT(OT_LOG_LEVEL_INFO)
+        static const char *ReasonToString(Reason aReason);
+#endif
+
+        uint32_t  mRequestedMax;
+        TimeMilli mRequestTime;
+    };
+
 #if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE
     class AutoStart : public Clearable<AutoStart>
     {
     public:
         enum State : uint8_t{
-            kDisabled,                 // AutoStart is disabled.
-            kSelectedNone,             // AutoStart is enabled but not yet selected any servers.
-            kSelectedUnicastPreferred, // AutoStart selected a preferred unicast entry (address in service data).
-            kSelectedAnycast,          // AutoStart selected an anycast entry with `mAnycastSeqNum`.
-            kSelectedUnicast,          // AutoStart selected a unicast entry (address in server data).
+            kDisabled,                 // Disabled.
+            kFirstTimeSelecting,       // Trying to select a server for the first time since AutoStart was enabled.
+            kReselecting,              // Trying to select a server again (previously selected server was removed).
+            kSelectedUnicastPreferred, // Has selected a preferred unicast entry (address in service data).
+            kSelectedAnycast,          // Has selected an anycast entry with `mAnycastSeqNum`.
+            kSelectedUnicast,          // Has selected a unicast entry (address in server data).
         };
 
         AutoStart(void);
@@ -1001,11 +1063,14 @@ private:
     void  Pause(void);
     void  HandleNotifierEvents(Events aEvents);
     void  HandleRoleChanged(void);
+    void  HandleUnicastAddressEvent(Ip6::Netif::AddressEvent aEvent, const Ip6::Netif::UnicastAddress &aAddress);
+    bool  ShouldUpdateHostAutoAddresses(void) const;
+    bool  ShouldHostAutoAddressRegister(const Ip6::Netif::UnicastAddress &aUnicastAddress) const;
     Error UpdateHostInfoStateOnAddressChange(void);
     void  UpdateServiceStateToRemove(Service &aService);
     State GetState(void) const { return mState; }
     void  SetState(State aState);
-    void  ChangeHostAndServiceStates(const ItemState *aNewStates, ServiceStateChangeMode aMode);
+    bool  ChangeHostAndServiceStates(const ItemState *aNewStates, ServiceStateChangeMode aMode);
     void  InvokeCallback(Error aError) const;
     void  InvokeCallback(Error aError, const HostInfo &aHostInfo, const Service *aRemovedServices) const;
     void  HandleHostInfoOrServiceChange(void);
@@ -1027,8 +1092,9 @@ private:
     Error        AppendUpdateLeaseOptRecord(Message &aMessage);
     Error        AppendSignature(Message &aMessage, Info &aInfo);
     void         UpdateRecordLengthInMessage(Dns::ResourceRecord &aRecord, uint16_t aOffset, Message &aMessage) const;
-    static void  HandleUdpReceive(void *aContext, otMessage *aMessage, const otMessageInfo *aMessageInfo);
+    void         HandleUdpReceive(Message &aMessage, const Ip6::MessageInfo &aMessageInfo);
     void         ProcessResponse(Message &aMessage);
+    bool         IsResponseMessageIdValid(uint16_t aId) const;
     void         HandleUpdateDone(void);
     void         GetRemovedServices(LinkedList<Service> &aRemovedServices);
     static Error ReadResourceRecord(const Message &aMessage, uint16_t &aOffset, Dns::ResourceRecord &aRecord);
@@ -1042,8 +1108,10 @@ private:
     bool         ShouldRenewEarly(const Service &aService) const;
     void         HandleTimer(void);
 #if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE
+    void  ApplyAutoStartGuardOnAttach(void);
     void  ProcessAutoStart(void);
     Error SelectUnicastEntry(DnsSrpUnicast::Origin aOrigin, DnsSrpUnicast::Info &aInfo) const;
+    void  HandleGuardTimer(void) {}
 #if OPENTHREAD_CONFIG_SRP_CLIENT_SWITCH_SERVER_ON_FAILURE
     void SelectNextServer(bool aDisallowSwitchOnRegisteredHost);
 #endif
@@ -1060,19 +1128,25 @@ private:
 
     static_assert(kMaxTxFailureRetries < 16, "kMaxTxFailureRetries exceed the range of mTxFailureRetryCount (4-bit)");
 
-    using DelayTimer = TimerMilliIn<Client, &Client::HandleTimer>;
+    using DelayTimer   = TimerMilliIn<Client, &Client::HandleTimer>;
+    using ClientSocket = Ip6::Udp::SocketIn<Client, &Client::HandleUdpReceive>;
+
+#if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE
+    using GuardTimer = TimerMilliIn<Client, &Client::HandleGuardTimer>;
+#endif
 
     State   mState;
     uint8_t mTxFailureRetryCount : 4;
     bool    mShouldRemoveKeyLease : 1;
-    bool    mAutoHostAddressAddedMeshLocal : 1;
     bool    mSingleServiceMode : 1;
 #if OPENTHREAD_CONFIG_REFERENCE_DEVICE_ENABLE
     bool mServiceKeyRecordEnabled : 1;
     bool mUseShortLeaseOption : 1;
 #endif
 
-    uint16_t mUpdateMessageId;
+    uint16_t mNextMessageId;
+    uint16_t mResponseMessageId;
+    uint16_t mAutoHostAddressCount;
     uint32_t mRetryWaitInterval;
 
     TimeMilli mLeaseRenewTime;
@@ -1081,8 +1155,9 @@ private:
     uint32_t  mKeyLease;
     uint32_t  mDefaultLease;
     uint32_t  mDefaultKeyLease;
+    TxJitter  mTxJitter;
 
-    Ip6::Udp::Socket mSocket;
+    ClientSocket mSocket;
 
     Callback<ClientCallback> mCallback;
     const char              *mDomainName;
@@ -1090,7 +1165,8 @@ private:
     LinkedList<Service>      mServices;
     DelayTimer               mTimer;
 #if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE
-    AutoStart mAutoStart;
+    GuardTimer mGuardTimer;
+    AutoStart  mAutoStart;
 #endif
 };
 

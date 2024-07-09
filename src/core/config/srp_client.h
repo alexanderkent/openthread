@@ -35,6 +35,16 @@
 #ifndef CONFIG_SRP_CLIENT_H_
 #define CONFIG_SRP_CLIENT_H_
 
+/**
+ * @addtogroup config-srp-client
+ *
+ * @brief
+ *   This module includes configuration variables for the SRP Client.
+ *
+ * @{
+ *
+ */
+
 #include "config/misc.h"
 
 /**
@@ -69,7 +79,7 @@
  *
  */
 #ifndef OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_DEFAULT_MODE
-#define OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_DEFAULT_MODE 0
+#define OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_DEFAULT_MODE 1
 #endif
 
 /**
@@ -216,38 +226,6 @@
 #endif
 
 /**
- * @def OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MIN_DELAY
- *
- * Specifies the minimum value (in msec) for the short random delay wait time before sending an update message.
- *
- * The random delay is chosen uniformly from the min up to max value `OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MAX_DELAY`.
- *
- * When there is a change (e.g., a new service is added/removed) that requires an update, the SRP client will wait for
- * a short delay before preparing and sending an SRP update message to server. This allows user to provide more change
- * that are then all sent in same update message. The delay is only applied on the first change that triggers an
- * update message transmission. Subsequent changes (API calls) while waiting for the tx to start will not reset the
- * delay timer.
- *
- */
-#ifndef OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MIN_DELAY
-#define OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MIN_DELAY 10
-#endif
-
-/**
- * @def OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MIN_DELAY
- *
- * Specifies the maximum value (in msec) for the short random delay wait time before sending an update message.
- *
- * The random delay is chosen uniformly from the min `OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MIN_DELAY` up to max value.
- *
- * See `OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MIN_DELAY` for more details.
- *
- */
-#ifndef OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MAX_DELAY
-#define OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_MAX_DELAY 700
-#endif
-
-/**
  * @def OPENTHREAD_CONFIG_SRP_CLIENT_MIN_RETRY_WAIT_INTERVAL
  *
  * Specifies the minimum wait interval (in msec) between SRP update message retries.
@@ -274,7 +252,7 @@
  * @def OPENTHREAD_CONFIG_SRP_CLIENT_RETRY_WAIT_INTERVAL_JITTER
  *
  * Specifies jitter (in msec) for retry wait interval. If the current retry wait interval is smaller than the jitter
- * then the the wait interval itself is used as jitter (e.g., with jitter 500 msec and if retry interval is 300ms
+ * then the wait interval itself is used as jitter (e.g., with jitter 500 msec and if retry interval is 300ms
  * the retry interval is then randomly selected from [0, 2*300] ms).
  *
  */
@@ -401,5 +379,10 @@
 #ifndef OPENTHREAD_CONFIG_SRP_CLIENT_BUFFERS_TXT_BUFFER_SIZE
 #define OPENTHREAD_CONFIG_SRP_CLIENT_BUFFERS_TXT_BUFFER_SIZE 64
 #endif
+
+/**
+ * @}
+ *
+ */
 
 #endif // CONFIG_SRP_CLIENT_H_

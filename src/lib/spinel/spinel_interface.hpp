@@ -35,6 +35,8 @@
 #ifndef SPINEL_SPINEL_INTERFACE_HPP_
 #define SPINEL_SPINEL_INTERFACE_HPP_
 
+#include "openthread-spinel-config.h"
+
 #include "lib/spinel/multi_frame_buffer.hpp"
 #include "lib/spinel/radio_spinel_metrics.h"
 #include "lib/spinel/spinel.h"
@@ -47,7 +49,7 @@ class SpinelInterface
 public:
     enum
     {
-        kMaxFrameSize = OPENTHREAD_CONFIG_PLATFORM_RADIO_SPINEL_RX_FRAME_BUFFER_SIZE, ///< Maximum buffer size.
+        kMaxFrameSize = OPENTHREAD_LIB_SPINEL_RX_FRAME_BUFFER_SIZE, ///< Maximum buffer size.
     };
 
     /**
@@ -175,11 +177,39 @@ protected:
      */
     bool IsSpinelResetCommand(const uint8_t *aFrame, uint16_t aLength)
     {
-        static constexpr uint8_t kSpinelResetCommand[] = {SPINEL_HEADER_FLAG | SPINEL_HEADER_IID_0, SPINEL_CMD_RESET};
-        return (aLength >= sizeof(kSpinelResetCommand)) &&
-               (memcmp(aFrame, kSpinelResetCommand, sizeof(kSpinelResetCommand)) == 0);
+        const uint8_t kSpinelResetCommandLength = 2;
+        bool          resetCmd                  = false;
+
+        if (aLength >= kSpinelResetCommandLength)
+        {
+#ifndef OPENTHREAD_CONFIG_MULTIPAN_RCP_ENABLE
+            // Validate the iid.
+            if (!((aFrame[0] & SPINEL_HEADER_IID_MASK) == SPINEL_HEADER_IID_0))
+            {
+                goto exit;
+            }
+#endif
+
+            // Validate the header flag by masking out the iid bits as it is validated above.
+            if (!((aFrame[0] & ~SPINEL_HEADER_IID_MASK) == SPINEL_HEADER_FLAG))
+            {
+                goto exit;
+            }
+
+            // Validate the reset command.
+            if (!(aFrame[1] == SPINEL_CMD_RESET))
+            {
+                goto exit;
+            }
+
+            resetCmd = true;
+        }
+
+    exit:
+        return resetCmd;
     }
 };
+
 } // namespace Spinel
 } // namespace ot
 

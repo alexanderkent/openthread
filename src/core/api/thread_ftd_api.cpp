@@ -250,15 +250,7 @@ otError otThreadGetChildNextIp6Address(otInstance                *aInstance,
     VerifyOrExit(child != nullptr, error = kErrorInvalidArgs);
     VerifyOrExit(child->IsStateValidOrRestoring(), error = kErrorInvalidArgs);
 
-    {
-        Child::AddressIterator iter(*child, *aIterator);
-
-        VerifyOrExit(!iter.IsDone(), error = kErrorNotFound);
-        *aAddress = *iter.GetAddress();
-
-        iter++;
-        *aIterator = iter.GetAsIndex();
-    }
+    error = child->GetNextIp6Address(*aIterator, AsCoreType(aAddress));
 
 exit:
     return error;
@@ -386,6 +378,16 @@ void otThreadSetCcmEnabled(otInstance *aInstance, bool aEnabled)
 void otThreadSetThreadVersionCheckEnabled(otInstance *aInstance, bool aEnabled)
 {
     AsCoreType(aInstance).Get<Mle::MleRouter>().SetThreadVersionCheckEnabled(aEnabled);
+}
+
+void otThreadSetTmfOriginFilterEnabled(otInstance *aInstance, bool aEnabled)
+{
+    AsCoreType(aInstance).Get<Ip6::Ip6>().SetTmfOriginFilterEnabled(aEnabled);
+}
+
+bool otThreadIsTmfOriginFilterEnabled(otInstance *aInstance)
+{
+    return AsCoreType(aInstance).Get<Ip6::Ip6>().IsTmfOriginFilterEnabled();
 }
 
 void otThreadGetRouterIdRange(otInstance *aInstance, uint8_t *aMinRouterId, uint8_t *aMaxRouterId)

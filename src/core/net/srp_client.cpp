@@ -68,13 +68,19 @@ void Client::HostInfo::Clear(void)
     SetState(kRemoved);
 }
 
-void Client::HostInfo::SetState(ItemState aState)
+bool Client::HostInfo::SetState(ItemState aState)
 {
-    if (aState != GetState())
-    {
-        LogInfo("HostInfo %s -> %s", ItemStateToString(GetState()), ItemStateToString(aState));
-        mState = MapEnum(aState);
-    }
+    bool didChange;
+
+    VerifyOrExit(aState != GetState(), didChange = false);
+
+    LogInfo("HostInfo %s -> %s", ItemStateToString(GetState()), ItemStateToString(aState));
+
+    mState    = MapEnum(aState);
+    didChange = true;
+
+exit:
+    return didChange;
 }
 
 void Client::HostInfo::EnableAutoAddress(void)
@@ -121,9 +127,11 @@ exit:
     return error;
 }
 
-void Client::Service::SetState(ItemState aState)
+bool Client::Service::SetState(ItemState aState)
 {
-    VerifyOrExit(GetState() != aState);
+    bool didChange;
+
+    VerifyOrExit(GetState() != aState, didChange = false);
 
     LogInfo("Service %s -> %s, \"%s\" \"%s\"", ItemStateToString(GetState()), ItemStateToString(aState),
             GetInstanceName(), GetName());
@@ -150,10 +158,11 @@ void Client::Service::SetState(ItemState aState)
                 GetPriority(), GetNumTxtEntries());
     }
 
-    mState = MapEnum(aState);
+    mState    = MapEnum(aState);
+    didChange = true;
 
 exit:
-    return;
+    return didChange;
 }
 
 bool Client::Service::Matches(const Service &aOther) const
@@ -167,6 +176,96 @@ bool Client::Service::Matches(const Service &aOther) const
 }
 
 //---------------------------------------------------------------------
+// Client::TxJitter
+
+const uint32_t Client::TxJitter::kMaxJitters[] = {
+    Client::kMaxTxJitterOnDeviceReboot,    // (0) kOnDeviceReboot
+    Client::kMaxTxJitterOnServerStart,     // (1) kOnServerStart
+    Client::kMaxTxJitterOnServerRestart,   // (2) kOnServerRestart
+    Client::kMaxTxJitterOnServerSwitch,    // (3) kOnServerSwitch
+    Client::kMaxTxJitterOnSlaacAddrAdd,    // (4) kOnSlaacAddrAdd
+    Client::kMaxTxJitterOnSlaacAddrRemove, // (5) kOnSlaacAddrRemove
+};
+
+void Client::TxJitter::Request(Reason aReason)
+{
+    static_assert(0 == kOnDeviceReboot, "kOnDeviceReboot value is incorrect");
+    static_assert(1 == kOnServerStart, "kOnServerStart value is incorrect");
+    static_assert(2 == kOnServerRestart, "kOnServerRestart value is incorrect");
+    static_assert(3 == kOnServerSwitch, "kOnServerSwitch value is incorrect");
+    static_assert(4 == kOnSlaacAddrAdd, "kOnSlaacAddrAdd value is incorrect");
+    static_assert(5 == kOnSlaacAddrRemove, "kOnSlaacAddrRemove value is incorrect");
+
+    uint32_t maxJitter = kMaxJitters[aReason];
+
+    LogInfo("Requesting max tx jitter %lu (%s)", ToUlong(maxJitter), ReasonToString(aReason));
+
+    if (mRequestedMax != 0)
+    {
+        // If we have a previous request, adjust the `mRequestedMax`
+        // based on the time elapsed since that request was made.
+
+        uint32_t duration = TimerMilli::GetNow() - mRequestTime;
+
+        mRequestedMax = (mRequestedMax > duration) ? mRequestedMax - duration : 0;
+    }
+
+    mRequestedMax = Max(mRequestedMax, maxJitter);
+    mRequestTime  = TimerMilli::GetNow();
+}
+
+uint32_t Client::TxJitter::DetermineDelay(void)
+{
+    uint32_t delay;
+    uint32_t maxJitter = kMaxTxJitterDefault;
+
+    if (mRequestedMax != 0)
+    {
+        uint32_t duration = TimerMilli::GetNow() - mRequestTime;
+
+        if (duration >= mRequestedMax)
+        {
+            LogInfo("Requested max tx jitter %lu already expired", ToUlong(mRequestedMax));
+        }
+        else
+        {
+            maxJitter = Max(mRequestedMax - duration, kMaxTxJitterDefault);
+            LogInfo("Applying remaining max jitter %lu", ToUlong(maxJitter));
+        }
+
+        mRequestedMax = 0;
+    }
+
+    delay = Random::NonCrypto::GetUint32InRange(kMinTxJitter, maxJitter);
+    LogInfo("Use random tx jitter %lu from [%lu, %lu]", ToUlong(delay), ToUlong(kMinTxJitter), ToUlong(maxJitter));
+
+    return delay;
+}
+
+#if OT_SHOULD_LOG_AT(OT_LOG_LEVEL_INFO)
+const char *Client::TxJitter::ReasonToString(Reason aReason)
+{
+    static const char *const kReasonStrings[] = {
+        "OnDeviceReboot",    // (0) kOnDeviceReboot
+        "OnServerStart",     // (1) kOnServerStart
+        "OnServerRestart",   // (2) kOnServerRestart
+        "OnServerSwitch",    // (3) kOnServerSwitch
+        "OnSlaacAddrAdd",    // (4) kOnSlaacAddrAdd
+        "OnSlaacAddrRemove", // (5) kOnSlaacAddrRemove
+    };
+
+    static_assert(0 == kOnDeviceReboot, "kOnDeviceReboot value is incorrect");
+    static_assert(1 == kOnServerStart, "kOnServerStart value is incorrect");
+    static_assert(2 == kOnServerRestart, "kOnServerRestart value is incorrect");
+    static_assert(3 == kOnServerSwitch, "kOnServerSwitch value is incorrect");
+    static_assert(4 == kOnSlaacAddrAdd, "kOnSlaacAddrAdd value is incorrect");
+    static_assert(5 == kOnSlaacAddrRemove, "kOnSlaacAddrRemove value is incorrect");
+
+    return kReasonStrings[aReason];
+}
+#endif
+
+//---------------------------------------------------------------------
 // Client::AutoStart
 
 #if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE
@@ -174,7 +273,7 @@ bool Client::Service::Matches(const Service &aOther) const
 Client::AutoStart::AutoStart(void)
 {
     Clear();
-    mState = kDefaultMode ? kSelectedNone : kDisabled;
+    mState = kDefaultMode ? kFirstTimeSelecting : kDisabled;
 }
 
 bool Client::AutoStart::HasSelectedServer(void) const
@@ -184,7 +283,8 @@ bool Client::AutoStart::HasSelectedServer(void) const
     switch (mState)
     {
     case kDisabled:
-    case kSelectedNone:
+    case kFirstTimeSelecting:
+    case kReselecting:
         break;
 
     case kSelectedUnicastPreferred:
@@ -215,18 +315,20 @@ void Client::AutoStart::InvokeCallback(const Ip6::SockAddr *aServerSockAddr) con
 const char *Client::AutoStart::StateToString(State aState)
 {
     static const char *const kStateStrings[] = {
-        "Disabled",    // (0) kDisabled
-        "Idle",        // (1) kSelectedNone
-        "Unicast-prf", // (2) kSelectedUnicastPreferred
-        "Anycast",     // (3) kSelectedAnycast
-        "Unicast",     // (4) kSelectedUnicast
+        "Disabled",      // (0) kDisabled
+        "1stTimeSelect", // (1) kFirstTimeSelecting
+        "Reselect",      // (2) kReselecting
+        "Unicast-prf",   // (3) kSelectedUnicastPreferred
+        "Anycast",       // (4) kSelectedAnycast
+        "Unicast",       // (5) kSelectedUnicast
     };
 
     static_assert(0 == kDisabled, "kDisabled value is incorrect");
-    static_assert(1 == kSelectedNone, "kSelectedNone value is incorrect");
-    static_assert(2 == kSelectedUnicastPreferred, "kSelectedUnicastPreferred value is incorrect");
-    static_assert(3 == kSelectedAnycast, "kSelectedAnycast value is incorrect");
-    static_assert(4 == kSelectedUnicast, "kSelectedUnicast value is incorrect");
+    static_assert(1 == kFirstTimeSelecting, "kFirstTimeSelecting value is incorrect");
+    static_assert(2 == kReselecting, "kReselecting value is incorrect");
+    static_assert(3 == kSelectedUnicastPreferred, "kSelectedUnicastPreferred value is incorrect");
+    static_assert(4 == kSelectedAnycast, "kSelectedAnycast value is incorrect");
+    static_assert(5 == kSelectedUnicast, "kSelectedUnicast value is incorrect");
 
     return kStateStrings[aState];
 }
@@ -244,22 +346,26 @@ Client::Client(Instance &aInstance)
     , mState(kStateStopped)
     , mTxFailureRetryCount(0)
     , mShouldRemoveKeyLease(false)
-    , mAutoHostAddressAddedMeshLocal(false)
     , mSingleServiceMode(false)
 #if OPENTHREAD_CONFIG_REFERENCE_DEVICE_ENABLE
     , mServiceKeyRecordEnabled(false)
     , mUseShortLeaseOption(false)
 #endif
-    , mUpdateMessageId(0)
+    , mNextMessageId(0)
+    , mResponseMessageId(0)
+    , mAutoHostAddressCount(0)
     , mRetryWaitInterval(kMinRetryWaitInterval)
     , mTtl(0)
     , mLease(0)
     , mKeyLease(0)
     , mDefaultLease(kDefaultLease)
     , mDefaultKeyLease(kDefaultKeyLease)
-    , mSocket(aInstance)
+    , mSocket(aInstance, *this)
     , mDomainName(kDefaultDomainName)
     , mTimer(aInstance)
+#if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE
+    , mGuardTimer(aInstance)
+#endif
 {
     mHostInfo.Init();
 
@@ -286,7 +392,7 @@ Error Client::Start(const Ip6::SockAddr &aServerSockAddr, Requester aRequester)
     VerifyOrExit(GetState() == kStateStopped,
                  error = (aServerSockAddr == GetServerAddress()) ? kErrorNone : kErrorBusy);
 
-    SuccessOrExit(error = mSocket.Open(Client::HandleUdpReceive, this));
+    SuccessOrExit(error = mSocket.Open());
     SuccessOrExit(error = mSocket.Connect(aServerSockAddr));
 
     LogInfo("%starting, server %s", (aRequester == kRequesterUser) ? "S" : "Auto-s",
@@ -345,6 +451,7 @@ void Client::Stop(Requester aRequester, StopMode aMode)
 
     mShouldRemoveKeyLease = false;
     mTxFailureRetryCount  = 0;
+    mResponseMessageId    = mNextMessageId;
 
     if (aMode == kResetRetryInterval)
     {
@@ -421,20 +528,11 @@ void Client::HandleNotifierEvents(Events aEvents)
     }
 #endif
 
-    if (mHostInfo.IsAutoAddressEnabled())
+    if (aEvents.ContainsAny(kEventIp6AddressAdded | kEventIp6AddressRemoved | kEventThreadMeshLocalAddrChanged) &&
+        ShouldUpdateHostAutoAddresses())
     {
-        Events::Flags eventFlags = (kEventIp6AddressAdded | kEventIp6AddressRemoved);
-
-        if (mAutoHostAddressAddedMeshLocal)
-        {
-            eventFlags |= kEventThreadMeshLocalAddrChanged;
-        }
-
-        if (aEvents.ContainsAny(eventFlags))
-        {
-            IgnoreError(UpdateHostInfoStateOnAddressChange());
-            UpdateState();
-        }
+        IgnoreError(UpdateHostInfoStateOnAddressChange());
+        UpdateState();
     }
 }
 
@@ -442,6 +540,10 @@ void Client::HandleRoleChanged(void)
 {
     if (Get<Mle::Mle>().IsAttached())
     {
+#if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE
+        ApplyAutoStartGuardOnAttach();
+#endif
+
         VerifyOrExit(GetState() == kStatePaused);
         Resume();
     }
@@ -494,6 +596,13 @@ Error Client::EnableAutoHostAddress(void)
     VerifyOrExit(!mHostInfo.IsAutoAddressEnabled());
     SuccessOrExit(error = UpdateHostInfoStateOnAddressChange());
 
+    for (Ip6::Netif::UnicastAddress &unicastAddress : Get<ThreadNetif>().GetUnicastAddresses())
+    {
+        unicastAddress.mSrpRegistered = false;
+    }
+
+    mAutoHostAddressCount = 0;
+
     mHostInfo.EnableAutoAddress();
     UpdateState();
 
@@ -513,6 +622,98 @@ Error Client::SetHostAddresses(const Ip6::Address *aAddresses, uint8_t aNumAddre
 
 exit:
     return error;
+}
+
+void Client::HandleUnicastAddressEvent(Ip6::Netif::AddressEvent aEvent, const Ip6::Netif::UnicastAddress &aAddress)
+{
+    // This callback from `Netif` signals an impending addition or
+    // removal of a unicast address, occurring before `Notifier`
+    // events. If `AutoAddress` is enabled, we check whether the
+    // address origin is SLAAC (e.g., an OMR address) and request a
+    // longer `TxJitter`. This helps randomize the next SRP
+    // update transmission time when triggered by an OMR prefix
+    // change.
+
+    VerifyOrExit(IsRunning());
+    VerifyOrExit(mHostInfo.IsAutoAddressEnabled());
+
+    VerifyOrExit(aAddress.GetOrigin() == Ip6::Netif::kOriginSlaac);
+
+#if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE
+    // The `mGuardTimer`, started by `ApplyAutoStartGuardOnAttach()`,
+    // tracks a guard interval after the attach event. If an
+    // address change occurs within this short window, we do not
+    // apply a longer TX jitter, as this likely indicates a device
+    // reboot.
+    VerifyOrExit(!mGuardTimer.IsRunning());
+#endif
+
+    mTxJitter.Request((aEvent == Ip6::Netif::kAddressAdded) ? TxJitter::kOnSlaacAddrAdd : TxJitter::kOnSlaacAddrRemove);
+
+exit:
+    return;
+}
+
+bool Client::ShouldUpdateHostAutoAddresses(void) const
+{
+    bool                        shouldUpdate    = false;
+    uint16_t                    registeredCount = 0;
+    Ip6::Netif::UnicastAddress &mlEid           = Get<Mle::Mle>().GetMeshLocalEidUnicastAddress();
+
+    VerifyOrExit(mHostInfo.IsAutoAddressEnabled());
+
+    // Check all addresses on `ThreadNetif` excluding the mesh local
+    // EID (`mlEid`). If any address should be registered but is not,
+    // or if any address was registered earlier but no longer should
+    // be, the host information needs to be re-registered to update
+    // the addresses. If there is no eligible address, then `mlEid`
+    // should be registered, so its status is checked. Finally, the
+    // number of addresses that should be registered is verified
+    // against the previous value `mAutoHostAddressCount` to handle
+    // the case where an earlier registered address is now removed.
+
+    for (const Ip6::Netif::UnicastAddress &unicastAddress : Get<ThreadNetif>().GetUnicastAddresses())
+    {
+        if (&unicastAddress == &mlEid)
+        {
+            continue;
+        }
+
+        if (ShouldHostAutoAddressRegister(unicastAddress) != unicastAddress.mSrpRegistered)
+        {
+            ExitNow(shouldUpdate = true);
+        }
+
+        if (unicastAddress.mSrpRegistered)
+        {
+            registeredCount++;
+        }
+    }
+
+    if (registeredCount == 0)
+    {
+        ExitNow(shouldUpdate = !mlEid.mSrpRegistered);
+    }
+
+    shouldUpdate = (registeredCount != mAutoHostAddressCount);
+
+exit:
+    return shouldUpdate;
+}
+
+bool Client::ShouldHostAutoAddressRegister(const Ip6::Netif::UnicastAddress &aUnicastAddress) const
+{
+    bool shouldRegister = false;
+
+    VerifyOrExit(aUnicastAddress.mValid);
+    VerifyOrExit(aUnicastAddress.mPreferred);
+    VerifyOrExit(!aUnicastAddress.GetAddress().IsLinkLocalUnicast());
+    VerifyOrExit(!Get<Mle::Mle>().IsMeshLocalAddress(aUnicastAddress.GetAddress()));
+
+    shouldRegister = true;
+
+exit:
+    return shouldRegister;
 }
 
 Error Client::UpdateHostInfoStateOnAddressChange(void)
@@ -665,7 +866,7 @@ void Client::SetState(State aState)
         break;
 
     case kStateToUpdate:
-        mTimer.Start(Random::NonCrypto::GetUint32InRange(kUpdateTxMinDelay, kUpdateTxMaxDelay));
+        mTimer.Start(mTxJitter.DetermineDelay());
         break;
 
     case kStateUpdating:
@@ -679,13 +880,15 @@ exit:
     return;
 }
 
-void Client::ChangeHostAndServiceStates(const ItemState *aNewStates, ServiceStateChangeMode aMode)
+bool Client::ChangeHostAndServiceStates(const ItemState *aNewStates, ServiceStateChangeMode aMode)
 {
+    bool anyChanged;
+
 #if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE && OPENTHREAD_CONFIG_SRP_CLIENT_SAVE_SELECTED_SERVER_ENABLE
     ItemState oldHostState = mHostInfo.GetState();
 #endif
 
-    mHostInfo.SetState(aNewStates[mHostInfo.GetState()]);
+    anyChanged = mHostInfo.SetState(aNewStates[mHostInfo.GetState()]);
 
     for (Service &service : mServices)
     {
@@ -694,7 +897,7 @@ void Client::ChangeHostAndServiceStates(const ItemState *aNewStates, ServiceStat
             continue;
         }
 
-        service.SetState(aNewStates[service.GetState()]);
+        anyChanged |= service.SetState(aNewStates[service.GetState()]);
     }
 
 #if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE && OPENTHREAD_CONFIG_SRP_CLIENT_SAVE_SELECTED_SERVER_ENABLE
@@ -705,7 +908,8 @@ void Client::ChangeHostAndServiceStates(const ItemState *aNewStates, ServiceStat
         switch (mAutoStart.GetState())
         {
         case AutoStart::kDisabled:
-        case AutoStart::kSelectedNone:
+        case AutoStart::kFirstTimeSelecting:
+        case AutoStart::kReselecting:
             break;
 
         case AutoStart::kSelectedUnicastPreferred:
@@ -721,6 +925,8 @@ void Client::ChangeHostAndServiceStates(const ItemState *aNewStates, ServiceStat
         }
     }
 #endif // OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE && OPENTHREAD_CONFIG_SRP_CLIENT_SAVE_SELECTED_SERVER_ENABLE
+
+    return anyChanged;
 }
 
 void Client::InvokeCallback(Error aError) const { InvokeCallback(aError, mHostInfo, nullptr); }
@@ -746,6 +952,7 @@ void Client::SendUpdate(void)
     Error    error   = kErrorNone;
     Message *message = mSocket.NewMessage();
     uint32_t length;
+    bool     anyChanged;
 
     VerifyOrExit(message != nullptr, error = kErrorNoBufs);
     SuccessOrExit(error = PrepareUpdateMessage(*message));
@@ -762,14 +969,35 @@ void Client::SendUpdate(void)
 
     SuccessOrExit(error = mSocket.SendTo(*message, Ip6::MessageInfo()));
 
-    LogInfo("Send update");
+    LogInfo("Send update, msg-id:0x%x", mNextMessageId);
 
     // State changes:
     //   kToAdd     -> kAdding
     //   kToRefresh -> kRefreshing
     //   kToRemove  -> kRemoving
 
-    ChangeHostAndServiceStates(kNewStateOnMessageTx, kForServicesAppendedInMessage);
+    anyChanged = ChangeHostAndServiceStates(kNewStateOnMessageTx, kForServicesAppendedInMessage);
+
+    // `mNextMessageId` tracks the message ID used in the prepared
+    // update message. It is incremented after a successful
+    // `mSocket.SendTo()` call. If unsuccessful, the same ID can be
+    // reused for the next update.
+    //
+    // Acceptable response message IDs fall within the range starting
+    // at `mResponseMessageId ` and ending before `mNextMessageId`.
+    //
+    // `anyChanged` tracks if any host or service states have changed.
+    // If not, the prepared message is identical to the last one with
+    // the same hosts/services, allowing us to accept earlier message
+    // IDs. If changes occur, `mResponseMessageId ` is updated to
+    // ensure only responses to the latest message are accepted.
+
+    if (anyChanged)
+    {
+        mResponseMessageId = mNextMessageId;
+    }
+
+    mNextMessageId++;
 
     // Remember the update message tx time to use later to determine the
     // lease renew time.
@@ -842,13 +1070,7 @@ Error Client::PrepareUpdateMessage(Message &aMessage)
     SuccessOrExit(error = ReadOrGenerateKey(info.mKeyPair));
 #endif
 
-    // Generate random Message ID and ensure it is different from last one
-    do
-    {
-        SuccessOrExit(error = header.SetRandomMessageId());
-    } while (header.GetMessageId() == mUpdateMessageId);
-
-    mUpdateMessageId = header.GetMessageId();
+    header.SetMessageId(mNextMessageId);
 
     // SRP Update (DNS Update) message must have exactly one record in
     // Zone section, no records in Prerequisite Section, can have
@@ -901,19 +1123,16 @@ Error Client::ReadOrGenerateKey(Crypto::Ecdsa::P256::KeyPairAsRef &aKeyRef)
 
     if (error == kErrorNone)
     {
-        Crypto::Ecdsa::P256::PublicKey publicKey;
-
-        if (keyPair.GetPublicKey(publicKey) == kErrorNone)
+        if (aKeyRef.ImportKeyPair(keyPair) != kErrorNone)
         {
-            SuccessOrExit(error = aKeyRef.ImportKeyPair(keyPair));
-            IgnoreError(Get<Settings>().Delete<Settings::SrpEcdsaKey>());
-            ExitNow();
+            SuccessOrExit(error = aKeyRef.Generate());
         }
         IgnoreError(Get<Settings>().Delete<Settings::SrpEcdsaKey>());
     }
-
-    error = aKeyRef.Generate();
-
+    else
+    {
+        SuccessOrExit(error = aKeyRef.Generate());
+    }
 exit:
     return error;
 }
@@ -1240,27 +1459,33 @@ Error Client::AppendHostDescriptionInstruction(Message &aMessage, Info &aInfo)
 
     if (mHostInfo.IsAutoAddressEnabled())
     {
-        // Append all addresses on Thread netif excluding link-local and
-        // mesh-local addresses. If no address is appended, we include
-        // the mesh local address.
+        // Append all preferred addresses on Thread netif excluding link-local
+        // and mesh-local addresses. If no address is appended, we include
+        // the mesh local EID.
 
-        mAutoHostAddressAddedMeshLocal = true;
+        mAutoHostAddressCount = 0;
 
-        for (const Ip6::Netif::UnicastAddress &unicastAddress : Get<ThreadNetif>().GetUnicastAddresses())
+        for (Ip6::Netif::UnicastAddress &unicastAddress : Get<ThreadNetif>().GetUnicastAddresses())
         {
-            if (unicastAddress.GetAddress().IsLinkLocal() ||
-                Get<Mle::Mle>().IsMeshLocalAddress(unicastAddress.GetAddress()))
+            if (ShouldHostAutoAddressRegister(unicastAddress))
             {
-                continue;
+                SuccessOrExit(error = AppendAaaaRecord(unicastAddress.GetAddress(), aMessage, aInfo));
+                unicastAddress.mSrpRegistered = true;
+                mAutoHostAddressCount++;
             }
-
-            SuccessOrExit(error = AppendAaaaRecord(unicastAddress.GetAddress(), aMessage, aInfo));
-            mAutoHostAddressAddedMeshLocal = false;
+            else
+            {
+                unicastAddress.mSrpRegistered = false;
+            }
         }
 
-        if (mAutoHostAddressAddedMeshLocal)
+        if (mAutoHostAddressCount == 0)
         {
-            SuccessOrExit(error = AppendAaaaRecord(Get<Mle::Mle>().GetMeshLocal64(), aMessage, aInfo));
+            Ip6::Netif::UnicastAddress &mlEid = Get<Mle::Mle>().GetMeshLocalEidUnicastAddress();
+
+            SuccessOrExit(error = AppendAaaaRecord(mlEid.GetAddress(), aMessage, aInfo));
+            mlEid.mSrpRegistered = true;
+            mAutoHostAddressCount++;
         }
     }
     else
@@ -1489,11 +1714,11 @@ void Client::UpdateRecordLengthInMessage(Dns::ResourceRecord &aRecord, uint16_t 
     aMessage.Write(aOffset, aRecord);
 }
 
-void Client::HandleUdpReceive(void *aContext, otMessage *aMessage, const otMessageInfo *aMessageInfo)
+void Client::HandleUdpReceive(Message &aMessage, const Ip6::MessageInfo &aMessageInfo)
 {
     OT_UNUSED_VARIABLE(aMessageInfo);
 
-    static_cast<Client *>(aContext)->ProcessResponse(AsCoreType(aMessage));
+    ProcessResponse(aMessage);
 }
 
 void Client::ProcessResponse(Message &aMessage)
@@ -1515,22 +1740,32 @@ void Client::ProcessResponse(Message &aMessage)
     uint16_t            recordCount;
     LinkedList<Service> removedServices;
 
-    VerifyOrExit(GetState() == kStateUpdating);
+    switch (GetState())
+    {
+    case kStateToUpdate:
+    case kStateUpdating:
+    case kStateToRetry:
+        break;
+    case kStateStopped:
+    case kStatePaused:
+    case kStateUpdated:
+        ExitNow();
+    }
 
     SuccessOrExit(error = aMessage.Read(offset, header));
 
     VerifyOrExit(header.GetType() == Dns::Header::kTypeResponse, error = kErrorParse);
     VerifyOrExit(header.GetQueryType() == Dns::Header::kQueryTypeUpdate, error = kErrorParse);
-    VerifyOrExit(header.GetMessageId() == mUpdateMessageId, error = kErrorDrop);
+
+    VerifyOrExit(IsResponseMessageIdValid(header.GetMessageId()), error = kErrorDrop);
+    mResponseMessageId = header.GetMessageId() + 1;
 
     if (!Get<Mle::Mle>().IsRxOnWhenIdle())
     {
         Get<DataPollSender>().StopFastPolls();
     }
 
-    // Response is for the earlier request message.
-
-    LogInfo("Received response");
+    LogInfo("Received response, msg-id:0x%x", header.GetMessageId());
 
 #if OPENTHREAD_CONFIG_SRP_CLIENT_AUTO_START_API_ENABLE && OPENTHREAD_CONFIG_SRP_CLIENT_SWITCH_SERVER_ON_FAILURE
     mAutoStart.ResetTimeoutFailureCount();
@@ -1622,12 +1857,14 @@ void Client::ProcessResponse(Message &aMessage)
     // and the lease time. `kLeaseRenewGuardInterval` is used to
     // ensure that we renew the lease before server expires it. In the
     // unlikely (but maybe useful for testing) case where the accepted
-    // lease interval is too short (shorter than the guard time) we
-    // just use half of the accepted lease interval.
+    // lease interval is too short (shorter than twice the guard time)
+    // we just use half of the accepted lease interval.
 
-    if (mLease > kLeaseRenewGuardInterval)
+    if (mLease > 2 * kLeaseRenewGuardInterval)
     {
-        mLeaseRenewTime += Time::SecToMsec(mLease - kLeaseRenewGuardInterval);
+        uint32_t interval = Time::SecToMsec(mLease - kLeaseRenewGuardInterval);
+
+        mLeaseRenewTime += Random::NonCrypto::AddJitter(interval, kLeaseRenewJitter);
     }
     else
     {
@@ -1657,6 +1894,13 @@ exit:
     {
         LogInfo("Failed to process response %s", ErrorToString(error));
     }
+}
+
+bool Client::IsResponseMessageIdValid(uint16_t aId) const
+{
+    // Semantically equivalent to `(aId >= mResponseMessageId) && (aId < mNextMessageId)`
+
+    return !SerialNumber::IsLess(aId, mResponseMessageId) && SerialNumber::IsLess(aId, mNextMessageId);
 }
 
 void Client::HandleUpdateDone(void)
@@ -1732,9 +1976,8 @@ exit:
 
 void Client::UpdateState(void)
 {
-    TimeMilli now               = TimerMilli::GetNow();
-    TimeMilli earliestRenewTime = now.GetDistantFuture();
-    bool      shouldUpdate      = false;
+    NextFireTime nextRenewTime;
+    bool         shouldUpdate = false;
 
     VerifyOrExit((GetState() != kStateStopped) && (GetState() != kStatePaused));
     VerifyOrExit(mHostInfo.GetName() != nullptr);
@@ -1754,7 +1997,7 @@ void Client::UpdateState(void)
         break;
 
     case kRegistered:
-        if (now < mLeaseRenewTime)
+        if (nextRenewTime.GetNow() < mLeaseRenewTime)
         {
             break;
         }
@@ -1801,14 +2044,14 @@ void Client::UpdateState(void)
                 break;
 
             case kRegistered:
-                if (service.GetLeaseRenewTime() <= now)
+                if (service.GetLeaseRenewTime() <= nextRenewTime.GetNow())
                 {
                     service.SetState(kToRefresh);
                     shouldUpdate = true;
                 }
                 else
                 {
-                    earliestRenewTime = Min(earliestRenewTime, service.GetLeaseRenewTime());
+                    nextRenewTime.UpdateIfEarlier(service.GetLeaseRenewTime());
                 }
 
                 break;
@@ -1828,9 +2071,9 @@ void Client::UpdateState(void)
         ExitNow();
     }
 
-    if ((GetState() == kStateUpdated) && (earliestRenewTime != now.GetDistantFuture()))
+    if (GetState() == kStateUpdated)
     {
-        mTimer.FireAt(earliestRenewTime);
+        mTimer.FireAt(nextRenewTime);
     }
 
 exit:
@@ -1946,8 +2189,34 @@ void Client::EnableAutoStartMode(AutoStartCallback aCallback, void *aContext)
 
     VerifyOrExit(mAutoStart.GetState() == AutoStart::kDisabled);
 
-    mAutoStart.SetState(AutoStart::kSelectedNone);
+    mAutoStart.SetState(AutoStart::kFirstTimeSelecting);
+    ApplyAutoStartGuardOnAttach();
+
     ProcessAutoStart();
+
+exit:
+    return;
+}
+
+void Client::ApplyAutoStartGuardOnAttach(void)
+{
+    VerifyOrExit(Get<Mle::Mle>().IsAttached());
+    VerifyOrExit(!IsRunning());
+    VerifyOrExit(mAutoStart.GetState() == AutoStart::kFirstTimeSelecting);
+
+    // The `mGuardTimer` tracks a guard interval after the attach
+    // event while `AutoStart` has yet to select a server for the
+    // first time.
+    //
+    // This is used by `ProcessAutoStart()` to apply different TX
+    // jitter values. If server selection occurs within this short
+    // window, a shorter TX jitter is used. This typically represents
+    // the device rebooting or being paired.
+    //
+    // The guard time is also checked when handling SLAAC address change
+    // events, to decide whether or not to request longer TX jitter.
+
+    mGuardTimer.Start(kGuardTimeAfterAttachToUseShorterTxJitter);
 
 exit:
     return;
@@ -1958,7 +2227,8 @@ void Client::ProcessAutoStart(void)
     Ip6::SockAddr       serverSockAddr;
     DnsSrpAnycast::Info anycastInfo;
     DnsSrpUnicast::Info unicastInfo;
-    bool                shouldRestart = false;
+    AutoStart::State    oldAutoStartState = mAutoStart.GetState();
+    bool                shouldRestart     = false;
 
     // If auto start mode is enabled, we check the Network Data entries
     // to discover and select the preferred SRP server to register with.
@@ -1973,7 +2243,7 @@ void Client::ProcessAutoStart(void)
 
     if (IsRunning())
     {
-        VerifyOrExit(mAutoStart.GetState() != AutoStart::kSelectedNone);
+        VerifyOrExit(mAutoStart.HasSelectedServer());
     }
 
     // There are three types of entries in Network Data:
@@ -2021,14 +2291,68 @@ void Client::ProcessAutoStart(void)
         Stop(kRequesterAuto, kResetRetryInterval);
     }
 
-    if (!serverSockAddr.GetAddress().IsUnspecified())
+    if (serverSockAddr.GetAddress().IsUnspecified())
     {
-        IgnoreError(Start(serverSockAddr, kRequesterAuto));
+        if (mAutoStart.HasSelectedServer())
+        {
+            mAutoStart.SetState(AutoStart::kReselecting);
+        }
+
+        ExitNow();
     }
-    else
+
+    // Before calling `Start()`, determine the trigger reason for
+    // starting the client with the newly discovered server based on
+    // `AutoStart` state transitions. This reason is then used to
+    // select the appropriate TX jitter interval (randomizing the
+    // initial SRP update transmission to the new server).
+
+    switch (oldAutoStartState)
     {
-        mAutoStart.SetState(AutoStart::kSelectedNone);
+    case AutoStart::kDisabled:
+        break;
+
+    case AutoStart::kFirstTimeSelecting:
+
+        // If the device is attaching to an established Thread mesh
+        // (e.g., after a reboot or pairing), the Network Data it
+        // receives should already include a server entry, leading to
+        // a quick server selection after attachment. The `mGuardTimer`,
+        // started by `ApplyAutoStartGuardOnAttach()`, tracks a guard
+        // interval after the attach event. If server selection
+        // occurs within this short window, a shorter TX jitter is
+        // used (`TxJitter::kOnDeviceReboot`), allowing the device to
+        // register quickly and become discoverable.
+        //
+        // If server discovery takes longer, a longer TX jitter
+        // is used (`TxJitter::kOnServerStart`). This situation
+        // can indicate a server/BR starting up or a network-wide
+        // restart of many nodes (e.g., due to a power outage).
+
+        if (mGuardTimer.IsRunning())
+        {
+            mTxJitter.Request(TxJitter::kOnDeviceReboot);
+        }
+        else
+        {
+            mTxJitter.Request(TxJitter::kOnServerStart);
+        }
+
+        break;
+
+    case AutoStart::kReselecting:
+        // Server is restarted (or possibly a new server started).
+        mTxJitter.Request(TxJitter::kOnServerRestart);
+        break;
+
+    case AutoStart::kSelectedUnicastPreferred:
+    case AutoStart::kSelectedAnycast:
+    case AutoStart::kSelectedUnicast:
+        mTxJitter.Request(TxJitter::kOnServerSwitch);
+        break;
     }
+
+    IgnoreError(Start(serverSockAddr, kRequesterAuto));
 
 exit:
     return;
@@ -2120,7 +2444,8 @@ void Client::SelectNextServer(bool aDisallowSwitchOnRegisteredHost)
 
     case AutoStart::kSelectedAnycast:
     case AutoStart::kDisabled:
-    case AutoStart::kSelectedNone:
+    case AutoStart::kFirstTimeSelecting:
+    case AutoStart::kReselecting:
         ExitNow();
     }
 

@@ -52,6 +52,7 @@
 #include "common/linked_list.hpp"
 #include "common/locator.hpp"
 #include "common/non_copyable.hpp"
+#include "common/offset_range.hpp"
 #include "common/pool.hpp"
 #include "common/timer.hpp"
 #include "common/type_traits.hpp"
@@ -200,9 +201,7 @@ protected:
         uint16_t     mPanId;       // PAN ID (used for MLE Discover Request and Response).
         uint8_t      mChannel;     // The message channel (used for MLE Announce).
         RssAverager  mRssAverager; // The averager maintaining the received signal strength (RSS) average.
-#if OPENTHREAD_CONFIG_MLE_LINK_METRICS_SUBJECT_ENABLE
-        LqiAverager mLqiAverager; // The averager maintaining the Link quality indicator (LQI) average.
-#endif
+        LqiAverager  mLqiAverager; // The averager maintaining the Link quality indicator (LQI) average.
 #if OPENTHREAD_FTD
         ChildMask mChildMask; // ChildMask to indicate which sleepy children need to receive this.
 #endif
@@ -218,7 +217,9 @@ protected:
         bool    mMulticastLoop : 1;       // Whether this multicast message may be looped back.
         bool    mResolvingAddress : 1;    // Whether the message is pending an address query resolution.
         bool    mAllowLookbackToHost : 1; // Whether the message is allowed to be looped back to host.
-        uint8_t mOrigin : 2;              // The origin of the message.
+        bool    mIsDstPanIdBroadcast : 1; // IWhether the dest PAN ID is broadcast.
+        uint8_t mOrigin : 2;
+        // The origin of the message.
 #if OPENTHREAD_CONFIG_MULTI_RADIO
         uint8_t mRadioType : 2;      // The radio link type the message was received on, or should be sent on.
         bool    mIsRadioTypeSet : 1; // Whether the radio type is set.
@@ -286,7 +287,8 @@ public:
         kTypeSupervision  = 2, ///< A child supervision frame.
         kTypeMacEmptyData = 3, ///< An empty MAC data frame.
         kTypeIp4          = 4, ///< A full uncompressed IPv4 packet, for NAT64.
-        kTypeOther        = 5, ///< Other (data) message.
+        kTypeBle          = 5, ///< A BLE payload message.
+        kTypeOther        = 6, ///< Other (data) message.
     };
 
     /**
@@ -666,6 +668,17 @@ public:
     Error InsertHeader(uint16_t aOffset, uint16_t aLength);
 
     /**
+     * Removes footer bytes from the end of the message.
+     *
+     * The caller should ensure the message contains the bytes to be removed, otherwise as many bytes as available
+     * will be removed.
+     *
+     * @param[in] aLength   Number of footer bytes to remove from end of the `Message`.
+     *
+     */
+    void RemoveFooter(uint16_t aLength);
+
+    /**
      * Appends bytes to the end of the message.
      *
      * On success, this method grows the message by @p aLength bytes.
@@ -694,6 +707,19 @@ public:
      *
      */
     Error AppendBytesFromMessage(const Message &aMessage, uint16_t aOffset, uint16_t aLength);
+
+    /**
+     * Appends bytes read from another or potentially the same message to the end of the current message.
+     *
+     * @param[in] aMessage     The message to read the bytes from (it can be the same as the current message).
+     * @param[in] aOffsetRange The offset range in @p aMessage to read bytes from.
+     *
+     * @retval kErrorNone    Successfully appended the bytes.
+     * @retval kErrorNoBufs  Insufficient available buffers to grow the message.
+     * @retval kErrorParse   Not enough bytes in @p aMessage to read @p aOffsetRange.
+     *
+     */
+    Error AppendBytesFromMessage(const Message &aMessage, const OffsetRange &aOffsetRange);
 
     /**
      * Appends an object to the end of the message.
@@ -746,6 +772,17 @@ public:
     uint16_t ReadBytes(uint16_t aOffset, void *aBuf, uint16_t aLength) const;
 
     /**
+     * Reads bytes from the message.
+     *
+     * @param[in]  aOffsetRange  The offset range in the message to read bytes from.
+     * @param[out] aBuf          A pointer to a data buffer to copy the read bytes into.
+     *
+     * @returns The number of bytes read.
+     *
+     */
+    uint16_t ReadBytes(const OffsetRange &aOffsetRange, void *aBuf) const;
+
+    /**
      * Reads a given number of bytes from the message.
      *
      * If there are fewer bytes available in the message than the requested read length, the available bytes will be
@@ -760,6 +797,22 @@ public:
      *
      */
     Error Read(uint16_t aOffset, void *aBuf, uint16_t aLength) const;
+
+    /**
+     * Reads a given number of bytes from the message.
+     *
+     * If there are fewer bytes available in the message or @p aOffsetRange than the requested @p aLength, the
+     * available bytes are read and copied into @p aBuf. In this case `kErrorParse` will be returned.
+     *
+     * @param[in]  aOffsetRange  The offset range in the message to read from.
+     * @param[out] aBuf          A pointer to a data buffer to copy the read bytes into.
+     * @param[in]  aLength       Number of bytes to read.
+     *
+     * @retval kErrorNone     Requested bytes were successfully read from message.
+     * @retval kErrorParse    Not enough bytes remaining to read the requested @p aLength.
+     *
+     */
+    Error Read(const OffsetRange &aOffsetRange, void *aBuf, uint16_t aLength) const;
 
     /**
      * Reads an object from the message.
@@ -782,6 +835,29 @@ public:
         static_assert(!TypeTraits::IsPointer<ObjectType>::kValue, "ObjectType must not be a pointer");
 
         return Read(aOffset, &aObject, sizeof(ObjectType));
+    }
+
+    /**
+     * Reads an object from the message.
+     *
+     * If there are fewer bytes available in the message or @p aOffsetRange than the requested object size, the
+     * available bytes will be read and copied into @p aObject (@p aObject will be read partially). In this case
+     * `kErrorParse` will be returned.
+     *
+     * @tparam     ObjectType   The object type to read from the message.
+     *
+     * @param[in]  aOffsetRange  The offset range in the message to read from.
+     * @param[out] aObject       A reference to the object to read into.
+     *
+     * @retval kErrorNone     Object @p aObject was successfully read from message.
+     * @retval kErrorParse    Not enough bytes remaining in message to read the entire object.
+     *
+     */
+    template <typename ObjectType> Error Read(const OffsetRange &aOffsetRange, ObjectType &aObject) const
+    {
+        static_assert(!TypeTraits::IsPointer<ObjectType>::kValue, "ObjectType must not be a pointer");
+
+        return Read(aOffsetRange, &aObject, sizeof(ObjectType));
     }
 
     /**
@@ -1014,11 +1090,15 @@ public:
     void SetMeshDest(uint16_t aMeshDest) { GetMetadata().mMeshDest = aMeshDest; }
 
     /**
-     * Returns the IEEE 802.15.4 Destination PAN ID.
+     * Returns the IEEE 802.15.4 Source or Destination PAN ID.
      *
-     * @note Only use this when sending MLE Discover Request or Response messages.
+     * For a message received over the Thread radio, specifies the Source PAN ID when present in MAC header, otherwise
+     * specifies the Destination PAN ID.
      *
-     * @returns The IEEE 802.15.4 Destination PAN ID.
+     * For a message to be sent over the Thread radio, this is set and used for MLE Discover Request or Response
+     * messages.
+     *
+     * @returns The IEEE 802.15.4 PAN ID.
      *
      */
     uint16_t GetPanId(void) const { return GetMetadata().mPanId; }
@@ -1032,6 +1112,17 @@ public:
      *
      */
     void SetPanId(uint16_t aPanId) { GetMetadata().mPanId = aPanId; }
+
+    /**
+     * Indicates whether the Destination PAN ID is broadcast.
+     *
+     * This is applicable for messages received over Thread radio.
+     *
+     * @retval TRUE   The Destination PAN ID is broadcast.
+     * @retval FALSE  The Destination PAN ID is not broadcast.
+     *
+     */
+    bool IsDstPanIdBroadcast(void) const { return GetMetadata().mIsDstPanIdBroadcast; }
 
     /**
      * Returns the IEEE 802.15.4 Channel to use for transmission.
@@ -1254,7 +1345,6 @@ public:
      */
     const RssAverager &GetRssAverager(void) const { return GetMetadata().mRssAverager; }
 
-#if OPENTHREAD_CONFIG_MLE_LINK_METRICS_SUBJECT_ENABLE
     /**
      * Updates the average LQI (Link Quality Indicator) associated with the message.
      *
@@ -1281,7 +1371,25 @@ public:
      *
      */
     uint8_t GetPsduCount(void) const { return GetMetadata().mLqiAverager.GetCount(); }
-#endif
+
+    /**
+     * Returns a const reference to LqiAverager of the message.
+     *
+     * @returns A const reference to the LqiAverager of the message.
+     *
+     */
+    const LqiAverager &GetLqiAverager(void) const { return GetMetadata().mLqiAverager; }
+
+    /**
+     * Retrieves `ThreadLinkInfo` from the message if received over Thread radio with origin `kOriginThreadNetif`.
+     *
+     * @pram[out] aLinkInfo     A reference to a `ThreadLinkInfo` to populate.
+     *
+     * @retval kErrorNone       Successfully retrieved the link info, @p `aLinkInfo` is updated.
+     * @retval kErrorNotFound   Message origin is not `kOriginThreadNetif`.
+     *
+     */
+    Error GetLinkInfo(ThreadLinkInfo &aLinkInfo) const;
 
     /**
      * Sets the message's link info properties (PAN ID, link security, RSS) from a given `ThreadLinkInfo`.
@@ -1289,7 +1397,7 @@ public:
      * @param[in] aLinkInfo   The `ThreadLinkInfo` instance from which to set message's related properties.
      *
      */
-    void SetLinkInfo(const ThreadLinkInfo &aLinkInfo);
+    void UpdateLinkInfoFrom(const ThreadLinkInfo &aLinkInfo);
 
     /**
      * Returns a pointer to the message queue (if any) where this message is queued.
@@ -1487,6 +1595,9 @@ private:
     bool IsInAQueue(void) const { return (GetMetadata().mQueue != nullptr); }
     void SetMessageQueue(MessageQueue *aMessageQueue);
     void SetPriorityQueue(PriorityQueue *aPriorityQueue);
+
+    void SetRssAverager(const RssAverager &aRssAverager) { GetMetadata().mRssAverager = aRssAverager; }
+    void SetLqiAverager(const LqiAverager &aLqiAverager) { GetMetadata().mLqiAverager = aLqiAverager; }
 
     Message       *&Next(void) { return GetMetadata().mNext; }
     Message *const &Next(void) const { return GetMetadata().mNext; }

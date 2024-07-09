@@ -79,7 +79,13 @@ exit:
 
 otError otThreadGetLeaderRloc(otInstance *aInstance, otIp6Address *aLeaderRloc)
 {
-    return AsCoreType(aInstance).Get<Mle::MleRouter>().GetLeaderAddress(AsCoreType(aLeaderRloc));
+    Error error = kErrorNone;
+
+    VerifyOrExit(!AsCoreType(aInstance).Get<Mle::Mle>().HasRloc16(Mle::kInvalidRloc16), error = kErrorDetached);
+    AsCoreType(aInstance).Get<Mle::Mle>().GetLeaderRloc(AsCoreType(aLeaderRloc));
+
+exit:
+    return error;
 }
 
 otLinkModeConfig otThreadGetLinkMode(otInstance *aInstance)
@@ -145,12 +151,12 @@ exit:
 
 const otIp6Address *otThreadGetRloc(otInstance *aInstance)
 {
-    return &AsCoreType(aInstance).Get<Mle::MleRouter>().GetMeshLocal16();
+    return &AsCoreType(aInstance).Get<Mle::MleRouter>().GetMeshLocalRloc();
 }
 
 const otIp6Address *otThreadGetMeshLocalEid(otInstance *aInstance)
 {
-    return &AsCoreType(aInstance).Get<Mle::MleRouter>().GetMeshLocal64();
+    return &AsCoreType(aInstance).Get<Mle::MleRouter>().GetMeshLocalEid();
 }
 
 const otMeshLocalPrefix *otThreadGetMeshLocalPrefix(otInstance *aInstance)
@@ -189,7 +195,13 @@ const otIp6Address *otThreadGetRealmLocalAllThreadNodesMulticastAddress(otInstan
 
 otError otThreadGetServiceAloc(otInstance *aInstance, uint8_t aServiceId, otIp6Address *aServiceAloc)
 {
-    return AsCoreType(aInstance).Get<Mle::MleRouter>().GetServiceAloc(aServiceId, AsCoreType(aServiceAloc));
+    Error error = kErrorNone;
+
+    VerifyOrExit(!AsCoreType(aInstance).Get<Mle::Mle>().HasRloc16(Mle::kInvalidRloc16), error = kErrorDetached);
+    AsCoreType(aInstance).Get<Mle::Mle>().GetServiceAloc(aServiceId, AsCoreType(aServiceAloc));
+
+exit:
+    return error;
 }
 
 const char *otThreadGetNetworkName(otInstance *aInstance)
@@ -275,15 +287,16 @@ uint32_t otThreadGetKeySequenceCounter(otInstance *aInstance)
 
 void otThreadSetKeySequenceCounter(otInstance *aInstance, uint32_t aKeySequenceCounter)
 {
-    AsCoreType(aInstance).Get<KeyManager>().SetCurrentKeySequence(aKeySequenceCounter);
+    AsCoreType(aInstance).Get<KeyManager>().SetCurrentKeySequence(
+        aKeySequenceCounter, KeyManager::kForceUpdate | KeyManager::kGuardTimerUnchanged);
 }
 
-uint32_t otThreadGetKeySwitchGuardTime(otInstance *aInstance)
+uint16_t otThreadGetKeySwitchGuardTime(otInstance *aInstance)
 {
     return AsCoreType(aInstance).Get<KeyManager>().GetKeySwitchGuardTime();
 }
 
-void otThreadSetKeySwitchGuardTime(otInstance *aInstance, uint32_t aKeySwitchGuardTime)
+void otThreadSetKeySwitchGuardTime(otInstance *aInstance, uint16_t aKeySwitchGuardTime)
 {
     AsCoreType(aInstance).Get<KeyManager>().SetKeySwitchGuardTime(aKeySwitchGuardTime);
 }
@@ -395,7 +408,18 @@ otError otThreadSetEnabled(otInstance *aInstance, bool aEnabled)
 
 uint16_t otThreadGetVersion(void) { return kThreadVersion; }
 
-bool otThreadIsSingleton(otInstance *aInstance) { return AsCoreType(aInstance).Get<Mle::MleRouter>().IsSingleton(); }
+bool otThreadIsSingleton(otInstance *aInstance)
+{
+    bool isSingleton = false;
+
+#if OPENTHREAD_FTD
+    isSingleton = AsCoreType(aInstance).Get<Mle::MleRouter>().IsSingleton();
+#else
+    OT_UNUSED_VARIABLE(aInstance);
+#endif
+
+    return isSingleton;
+}
 
 otError otThreadDiscover(otInstance              *aInstance,
                          uint32_t                 aScanChannels,

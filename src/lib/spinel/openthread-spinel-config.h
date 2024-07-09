@@ -34,7 +34,44 @@
 #ifndef OPENTHREAD_SPINEL_CONFIG_H_
 #define OPENTHREAD_SPINEL_CONFIG_H_
 
-#include "openthread-core-config.h"
+/**
+ * Include project specific lib config file if defined.
+ *
+ */
+#ifdef OPENTHREAD_PROJECT_LIB_CONFIG_FILE
+#include OPENTHREAD_PROJECT_LIB_CONFIG_FILE
+#endif
+
+/**
+ * @def OPENTHREAD_LIB_SPINEL_RX_FRAME_BUFFER_SIZE
+ *
+ * Specifies the rx frame buffer size used by `SpinelInterface` in RCP host (posix) code. This is applicable/used when
+ * `RadioSpinel` platform is used.
+ *
+ */
+#ifndef OPENTHREAD_LIB_SPINEL_RX_FRAME_BUFFER_SIZE
+#define OPENTHREAD_LIB_SPINEL_RX_FRAME_BUFFER_SIZE 8192
+#endif
+
+/**
+ * @def OPENTHREAD_LIB_SPINEL_LOG_MAX_SIZE
+ *
+ * The maximum log string size (number of chars).
+ *
+ */
+#ifndef OPENTHREAD_LIB_SPINEL_LOG_MAX_SIZE
+#define OPENTHREAD_LIB_SPINEL_LOG_MAX_SIZE 1024
+#endif
+
+/**
+ * @def OPENTHREAD_LIB_SPINEL_NCP_LOG_MAX_SIZE
+ *
+ * The maximum OpenThread log string size (number of chars) supported by NCP using Spinel `StreamWrite`.
+ *
+ */
+#ifndef OPENTHREAD_LIB_SPINEL_NCP_LOG_MAX_SIZE
+#define OPENTHREAD_LIB_SPINEL_NCP_LOG_MAX_SIZE 150
+#endif
 
 /**
  * @def OPENTHREAD_SPINEL_CONFIG_OPENTHREAD_MESSAGE_ENABLE
@@ -78,4 +115,45 @@
 #ifndef OPENTHREAD_SPINEL_CONFIG_RCP_TIME_SYNC_INTERVAL
 #define OPENTHREAD_SPINEL_CONFIG_RCP_TIME_SYNC_INTERVAL (60 * 1000 * 1000)
 #endif
+
+/**
+ * @def OPENTHREAD_SPINEL_CONFIG_BROADCAST_IID
+ *
+ * Define broadcast IID for spinel frames dedicated to all hosts in multipan configuration.
+ *
+ */
+#ifndef OPENTHREAD_SPINEL_CONFIG_BROADCAST_IID
+#define OPENTHREAD_SPINEL_CONFIG_BROADCAST_IID SPINEL_HEADER_IID_3
+#endif
+
+/**
+ * @def OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_ENABLE
+ *
+ * Enables compilation of vendor specific code for Spinel
+ *
+ */
+#ifndef OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_ENABLE
+#define OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_ENABLE 0
+#endif
+
+/**
+ * @def OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_HEADER
+ *
+ * Header file defining class VendorRadioSpinel
+ *
+ */
+#ifndef OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_HEADER
+#define OPENTHREAD_SPINEL_CONFIG_VENDOR_HOOK_HEADER "lib/spinel/example_vendor_hook.hpp"
+#endif
+
+/**
+ * @def OPENTHREAD_SPINEL_CONFIG_RCP_TX_WAIT_TIME_SECS
+ *
+ * Defines the Tx wait duration in seconds.
+ *
+ */
+#ifndef OPENTHREAD_SPINEL_CONFIG_RCP_TX_WAIT_TIME_SECS
+#define OPENTHREAD_SPINEL_CONFIG_RCP_TX_WAIT_TIME_SECS 5
+#endif
+
 #endif // OPENTHREAD_SPINEL_CONFIG_H_

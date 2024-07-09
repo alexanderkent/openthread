@@ -40,7 +40,7 @@
 
 #include <openthread/dataset.h>
 
-#include "cli/cli_output.hpp"
+#include "cli/cli_utils.hpp"
 
 namespace ot {
 namespace Cli {
@@ -49,13 +49,11 @@ namespace Cli {
  * Implements the Dataset CLI interpreter.
  *
  */
-class Dataset : private Output
+class Dataset : private Utils
 {
 public:
-    typedef Utils::CmdLineParser::Arg Arg;
-
     Dataset(otInstance *aInstance, OutputImplementer &aOutputImplementer)
-        : Output(aInstance, aOutputImplementer)
+        : Utils(aInstance, aOutputImplementer)
     {
     }
 
@@ -119,6 +117,8 @@ private:
     otError ParsePendingTimestamp(Arg *&aArgs, otOperationalDataset &aDataset);
     otError ParsePskc(Arg *&aArgs, otOperationalDataset &aDataset);
     otError ParseSecurityPolicy(Arg *&aArgs, otOperationalDataset &aDataset);
+
+    otError ParseTlvs(Arg &aArg, otOperationalDatasetTlvs &aDatasetTlvs);
 
     otError ProcessCommand(const ComponentMapper &aMapper, Arg aArgs[]);
 

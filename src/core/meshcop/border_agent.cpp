@@ -128,7 +128,7 @@ void BorderAgent::SendErrorMessage(const ForwardContext &aForwardContext, Error 
 
 exit:
     FreeMessageOnError(message, error);
-    LogError("send error CoAP message", error);
+    LogWarnOnError(error, "send error CoAP message");
 }
 
 void BorderAgent::SendErrorMessage(const Coap::Message &aRequest, bool aSeparate, Error aError)
@@ -158,7 +158,7 @@ void BorderAgent::SendErrorMessage(const Coap::Message &aRequest, bool aSeparate
 
 exit:
     FreeMessageOnError(message, error);
-    LogError("send error CoAP message", error);
+    LogWarnOnError(error, "send error CoAP message");
 }
 
 Error BorderAgent::SendMessage(Coap::Message &aMessage)
@@ -200,7 +200,7 @@ void BorderAgent::HandleCoapResponse(const ForwardContext &aForwardContext,
 
             SuccessOrExit(error = Tlv::Find<CommissionerSessionIdTlv>(*aResponse, sessionId));
 
-            IgnoreError(Get<Mle::MleRouter>().GetCommissionerAloc(mCommissionerAloc.GetAddress(), sessionId));
+            Get<Mle::Mle>().GetCommissionerAloc(sessionId, mCommissionerAloc.GetAddress());
             Get<ThreadNetif>().AddUnicastAddress(mCommissionerAloc);
             IgnoreError(Get<Ip6::Udp>().AddReceiver(mUdpReceiver));
 
@@ -238,6 +238,12 @@ BorderAgent::BorderAgent(Instance &aInstance)
     , mTimer(aInstance)
 #if OPENTHREAD_CONFIG_BORDER_AGENT_ID_ENABLE
     , mIdInitialized(false)
+#endif
+#if OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
+    , mUsingEphemeralKey(false)
+    , mOldUdpPort(0)
+    , mEphemeralKeyTimer(aInstance)
+    , mEphemeralKeyTask(aInstance)
 #endif
 {
     mCommissionerAloc.InitAsThreadOriginMeshLocal();
@@ -311,22 +317,20 @@ template <> void BorderAgent::HandleTmf<kUriProxyTx>(Coap::Message &aMessage, co
     Error                     error   = kErrorNone;
     Message                  *message = nullptr;
     Ip6::MessageInfo          messageInfo;
-    uint16_t                  offset;
-    uint16_t                  length;
+    OffsetRange               offsetRange;
     UdpEncapsulationTlvHeader udpEncapHeader;
 
     VerifyOrExit(mState != kStateStopped);
 
-    SuccessOrExit(error = Tlv::FindTlvValueOffset(aMessage, Tlv::kUdpEncapsulation, offset, length));
+    SuccessOrExit(error = Tlv::FindTlvValueOffsetRange(aMessage, Tlv::kUdpEncapsulation, offsetRange));
 
-    SuccessOrExit(error = aMessage.Read(offset, udpEncapHeader));
-    offset += sizeof(UdpEncapsulationTlvHeader);
-    length -= sizeof(UdpEncapsulationTlvHeader);
+    SuccessOrExit(error = aMessage.Read(offsetRange, udpEncapHeader));
+    offsetRange.AdvanceOffset(sizeof(UdpEncapsulationTlvHeader));
 
     VerifyOrExit(udpEncapHeader.GetSourcePort() > 0 && udpEncapHeader.GetDestinationPort() > 0, error = kErrorDrop);
 
     VerifyOrExit((message = Get<Ip6::Udp>().NewMessage()) != nullptr, error = kErrorNoBufs);
-    SuccessOrExit(error = message->AppendBytesFromMessage(aMessage, offset, length));
+    SuccessOrExit(error = message->AppendBytesFromMessage(aMessage, offsetRange));
 
     messageInfo.SetSockPort(udpEncapHeader.GetSourcePort());
     messageInfo.SetSockAddr(mCommissionerAloc.GetAddress());
@@ -341,7 +345,7 @@ template <> void BorderAgent::HandleTmf<kUriProxyTx>(Coap::Message &aMessage, co
 
 exit:
     FreeMessageOnError(message, error);
-    LogError("send proxy stream", error);
+    LogWarnOnError(error, "send proxy stream");
 }
 
 bool BorderAgent::HandleUdpReceive(void *aContext, const otMessage *aMessage, const otMessageInfo *aMessageInfo)
@@ -370,16 +374,18 @@ bool BorderAgent::HandleUdpReceive(const Message &aMessage, const Ip6::MessageIn
     {
         ExtendedTlv               extTlv;
         UdpEncapsulationTlvHeader udpEncapHeader;
-        uint16_t                  udpLength = aMessage.GetLength() - aMessage.GetOffset();
+        OffsetRange               offsetRange;
+
+        offsetRange.InitFromMessageOffsetToEnd(aMessage);
 
         extTlv.SetType(Tlv::kUdpEncapsulation);
-        extTlv.SetLength(sizeof(UdpEncapsulationTlvHeader) + udpLength);
+        extTlv.SetLength(sizeof(UdpEncapsulationTlvHeader) + offsetRange.GetLength());
         SuccessOrExit(error = message->Append(extTlv));
 
         udpEncapHeader.SetSourcePort(aMessageInfo.GetPeerPort());
         udpEncapHeader.SetDestinationPort(aMessageInfo.GetSockPort());
         SuccessOrExit(error = message->Append(udpEncapHeader));
-        SuccessOrExit(error = message->AppendBytesFromMessage(aMessage, aMessage.GetOffset(), udpLength));
+        SuccessOrExit(error = message->AppendBytesFromMessage(aMessage, offsetRange));
     }
 
     SuccessOrExit(error = Tlv::Append<Ip6AddressTlv>(*message, aMessageInfo.GetPeerAddr()));
@@ -392,7 +398,7 @@ exit:
     FreeMessageOnError(message, error);
     if (error != kErrorDestinationAddressFiltered)
     {
-        LogError("notify commissioner on ProxyRx (c/ur)", error);
+        LogWarnOnError(error, "notify commissioner on ProxyRx (c/ur)");
     }
 
     return error != kErrorDestinationAddressFiltered;
@@ -421,16 +427,18 @@ exit:
 
 Error BorderAgent::ForwardToCommissioner(Coap::Message &aForwardMessage, const Message &aMessage)
 {
-    Error error;
+    Error       error;
+    OffsetRange offsetRange;
 
-    SuccessOrExit(error = aForwardMessage.AppendBytesFromMessage(aMessage, aMessage.GetOffset(),
-                                                                 aMessage.GetLength() - aMessage.GetOffset()));
+    offsetRange.InitFromMessageOffsetToEnd(aMessage);
+    SuccessOrExit(error = aForwardMessage.AppendBytesFromMessage(aMessage, offsetRange));
+
     SuccessOrExit(error = SendMessage(aForwardMessage));
 
     LogInfo("Sent to commissioner");
 
 exit:
-    LogError("send to commissioner", error);
+    LogWarnOnError(error, "send to commissioner");
     return error;
 }
 
@@ -492,6 +500,7 @@ template <> void BorderAgent::HandleTmf<kUriRelayTx>(Coap::Message &aMessage, co
     uint16_t         joinerRouterRloc;
     Coap::Message   *message = nullptr;
     Tmf::MessageInfo messageInfo(GetInstance());
+    OffsetRange      offsetRange;
 
     VerifyOrExit(mState != kStateStopped);
 
@@ -502,8 +511,8 @@ template <> void BorderAgent::HandleTmf<kUriRelayTx>(Coap::Message &aMessage, co
     message = Get<Tmf::Agent>().NewPriorityNonConfirmablePostMessage(kUriRelayTx);
     VerifyOrExit(message != nullptr, error = kErrorNoBufs);
 
-    SuccessOrExit(error = message->AppendBytesFromMessage(aMessage, aMessage.GetOffset(),
-                                                          aMessage.GetLength() - aMessage.GetOffset()));
+    offsetRange.InitFromMessageOffsetToEnd(aMessage);
+    SuccessOrExit(error = message->AppendBytesFromMessage(aMessage, offsetRange));
 
     messageInfo.SetSockAddrToRlocPeerAddrTo(joinerRouterRloc);
     messageInfo.SetSockPortToTmf();
@@ -514,7 +523,7 @@ template <> void BorderAgent::HandleTmf<kUriRelayTx>(Coap::Message &aMessage, co
 
 exit:
     FreeMessageOnError(message, error);
-    LogError("send to joiner router request RelayTx (c/tx)", error);
+    LogWarnOnError(error, "send to joiner router request RelayTx (c/tx)");
 }
 
 Error BorderAgent::ForwardToLeader(const Coap::Message &aMessage, const Ip6::MessageInfo &aMessageInfo, Uri aUri)
@@ -525,6 +534,7 @@ Error BorderAgent::ForwardToLeader(const Coap::Message &aMessage, const Ip6::Mes
     Coap::Message           *message  = nullptr;
     bool                     petition = false;
     bool                     separate = false;
+    OffsetRange              offsetRange;
 
     VerifyOrExit(mState != kStateStopped);
 
@@ -552,10 +562,10 @@ Error BorderAgent::ForwardToLeader(const Coap::Message &aMessage, const Ip6::Mes
     message = Get<Tmf::Agent>().NewPriorityConfirmablePostMessage(aUri);
     VerifyOrExit(message != nullptr, error = kErrorNoBufs);
 
-    SuccessOrExit(error = message->AppendBytesFromMessage(aMessage, aMessage.GetOffset(),
-                                                          aMessage.GetLength() - aMessage.GetOffset()));
+    offsetRange.InitFromMessageOffsetToEnd(aMessage);
+    SuccessOrExit(error = message->AppendBytesFromMessage(aMessage, offsetRange));
 
-    SuccessOrExit(error = messageInfo.SetSockAddrToRlocPeerAddrToLeaderAloc());
+    messageInfo.SetSockAddrToRlocPeerAddrToLeaderAloc();
     messageInfo.SetSockPortToTmf();
 
     SuccessOrExit(error =
@@ -570,7 +580,7 @@ Error BorderAgent::ForwardToLeader(const Coap::Message &aMessage, const Ip6::Mes
     LogInfo("Forwarded request to leader on %s", PathForUri(aUri));
 
 exit:
-    LogError("forward to leader", error);
+    LogWarnOnError(error, "forward to leader");
 
     if (error != kErrorNone)
     {
@@ -599,25 +609,55 @@ void BorderAgent::HandleConnected(bool aConnected)
         LogInfo("Commissioner disconnected");
         IgnoreError(Get<Ip6::Udp>().RemoveReceiver(mUdpReceiver));
         Get<ThreadNetif>().RemoveUnicastAddress(mCommissionerAloc);
-        mState        = kStateStarted;
-        mUdpProxyPort = 0;
+
+#if OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
+        if (mUsingEphemeralKey)
+        {
+            RestartAfterRemovingEphemeralKey();
+        }
+        else
+#endif
+        {
+            mState        = kStateStarted;
+            mUdpProxyPort = 0;
+        }
     }
 }
 
 uint16_t BorderAgent::GetUdpPort(void) const { return Get<Tmf::SecureAgent>().GetUdpPort(); }
 
-void BorderAgent::Start(void)
+Error BorderAgent::Start(uint16_t aUdpPort)
 {
     Error error;
     Pskc  pskc;
 
-    VerifyOrExit(mState == kStateStopped, error = kErrorNone);
-
     Get<KeyManager>().GetPskc(pskc);
-    SuccessOrExit(error = Get<Tmf::SecureAgent>().Start(kUdpPort));
-    SuccessOrExit(error = Get<Tmf::SecureAgent>().SetPsk(pskc.m8, Pskc::kSize));
-
+    error = Start(aUdpPort, pskc.m8, Pskc::kSize);
     pskc.Clear();
+
+    return error;
+}
+
+Error BorderAgent::Start(uint16_t aUdpPort, const uint8_t *aPsk, uint8_t aPskLength)
+{
+    Error error = kErrorNone;
+
+    VerifyOrExit(mState == kStateStopped);
+
+#if OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
+    if (mUsingEphemeralKey)
+    {
+        SuccessOrExit(error = Get<Tmf::SecureAgent>().Start(aUdpPort, kMaxEphemeralKeyConnectionAttempts,
+                                                            HandleSecureAgentStopped, this));
+    }
+    else
+#endif
+    {
+        SuccessOrExit(error = Get<Tmf::SecureAgent>().Start(aUdpPort));
+    }
+
+    SuccessOrExit(error = Get<Tmf::SecureAgent>().SetPsk(aPsk, aPskLength));
+
     Get<Tmf::SecureAgent>().SetConnectedCallback(HandleConnected, this);
 
     mState        = kStateStarted;
@@ -626,7 +666,8 @@ void BorderAgent::Start(void)
     LogInfo("Border Agent start listening on port %u", GetUdpPort());
 
 exit:
-    LogError("start agent", error);
+    LogWarnOnError(error, "start agent");
+    return error;
 }
 
 void BorderAgent::HandleTimeout(void)
@@ -642,27 +683,128 @@ void BorderAgent::Stop(void)
 {
     VerifyOrExit(mState != kStateStopped);
 
+#if OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
+    if (mUsingEphemeralKey)
+    {
+        mUsingEphemeralKey = false;
+        mEphemeralKeyTimer.Stop();
+        mEphemeralKeyTask.Post();
+    }
+#endif
+
     mTimer.Stop();
     Get<Tmf::SecureAgent>().Stop();
 
     mState        = kStateStopped;
     mUdpProxyPort = 0;
-
     LogInfo("Border Agent stopped");
 
 exit:
     return;
 }
 
-#if OT_SHOULD_LOG_AT(OT_LOG_LEVEL_WARN)
-void BorderAgent::LogError(const char *aActionText, Error aError)
+#if OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
+
+Error BorderAgent::SetEphemeralKey(const char *aKeyString, uint32_t aTimeout, uint16_t aUdpPort)
 {
-    if (aError != kErrorNone)
+    Error    error  = kErrorNone;
+    uint16_t length = StringLength(aKeyString, kMaxEphemeralKeyLength + 1);
+
+    VerifyOrExit(mState == kStateStarted, error = kErrorInvalidState);
+    VerifyOrExit((length >= kMinEphemeralKeyLength) && (length <= kMaxEphemeralKeyLength), error = kErrorInvalidArgs);
+
+    if (!mUsingEphemeralKey)
     {
-        LogWarn("Failed to %s: %s", aActionText, ErrorToString(aError));
+        mOldUdpPort = GetUdpPort();
     }
+
+    Stop();
+
+    // We set the `mUsingEphemeralKey` before `Start()` since
+    // callbacks (like `HandleConnected()`) may be invoked from
+    // `Start()` itself.
+
+    mUsingEphemeralKey = true;
+
+    error = Start(aUdpPort, reinterpret_cast<const uint8_t *>(aKeyString), static_cast<uint8_t>(length));
+
+    if (error != kErrorNone)
+    {
+        mUsingEphemeralKey = false;
+        IgnoreError(Start(mOldUdpPort));
+        ExitNow();
+    }
+
+    mEphemeralKeyTask.Post();
+
+    if (aTimeout == 0)
+    {
+        aTimeout = kDefaultEphemeralKeyTimeout;
+    }
+
+    aTimeout = Min(aTimeout, kMaxEphemeralKeyTimeout);
+
+    mEphemeralKeyTimer.Start(aTimeout);
+
+    LogInfo("Allow ephemeral key for %lu msec on port %u", ToUlong(aTimeout), GetUdpPort());
+
+exit:
+    return error;
 }
-#endif
+
+void BorderAgent::ClearEphemeralKey(void)
+{
+    VerifyOrExit(mUsingEphemeralKey);
+
+    LogInfo("Clearing ephemeral key");
+    mEphemeralKeyTimer.Stop();
+
+    switch (mState)
+    {
+    case kStateStarted:
+        RestartAfterRemovingEphemeralKey();
+        break;
+
+    case kStateStopped:
+    case kStateActive:
+        // If there is an active commissioner connection, we wait till
+        // it gets disconnected before removing ephemeral key and
+        // restarting the agent.
+        break;
+    }
+
+exit:
+    return;
+}
+
+void BorderAgent::HandleEphemeralKeyTimeout(void)
+{
+    LogInfo("Ephemeral key timed out");
+    ClearEphemeralKey();
+}
+
+void BorderAgent::InvokeEphemeralKeyCallback(void) { mEphemeralKeyCallback.InvokeIfSet(); }
+
+void BorderAgent::RestartAfterRemovingEphemeralKey(void)
+{
+    LogInfo("Removing ephemeral key and restarting agent");
+
+    Stop();
+    IgnoreError(Start(mOldUdpPort));
+}
+
+void BorderAgent::HandleSecureAgentStopped(void *aContext)
+{
+    reinterpret_cast<BorderAgent *>(aContext)->HandleSecureAgentStopped();
+}
+
+void BorderAgent::HandleSecureAgentStopped(void)
+{
+    LogInfo("Reached max allowed connection attempts with ephemeral key");
+    RestartAfterRemovingEphemeralKey();
+}
+
+#endif // OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
 
 } // namespace MeshCoP
 } // namespace ot
