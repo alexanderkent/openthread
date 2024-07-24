@@ -75,6 +75,9 @@ RoutingManager::RoutingManager(Instance &aInstance)
     , mOmrPrefixManager(aInstance)
     , mRioAdvertiser(aInstance)
     , mOnLinkPrefixManager(aInstance)
+#if OPENTHREAD_CONFIG_BORDER_ROUTING_TRACK_PEER_BR_INFO_ENABLE
+    , mNetDataPeerBrTracker(aInstance)
+#endif
     , mRxRaTracker(aInstance)
     , mRoutePublisher(aInstance)
 #if OPENTHREAD_CONFIG_NAT64_BORDER_ROUTING_ENABLE
@@ -437,6 +440,10 @@ void RoutingManager::HandleNotifierEvents(Events aEvents)
     }
 
     mRoutePublisher.HandleNotifierEvents(aEvents);
+
+#if OPENTHREAD_CONFIG_BORDER_ROUTING_TRACK_PEER_BR_INFO_ENABLE
+    mNetDataPeerBrTracker.HandleNotifierEvents(aEvents);
+#endif
 
     VerifyOrExit(IsInitialized() && IsEnabled());
 
@@ -981,6 +988,91 @@ void RoutingManager::RoutePrefix::CopyInfoTo(PrefixTableEntry &aEntry, TimeMilli
     aEntry.mPreferredLifetime   = 0;
     aEntry.mRoutePreference     = static_cast<otRoutePreference>(GetRoutePreference());
 }
+
+//---------------------------------------------------------------------------------------------------------------------
+// NetDataPeerBrTracker
+
+#if OPENTHREAD_CONFIG_BORDER_ROUTING_TRACK_PEER_BR_INFO_ENABLE
+RoutingManager::NetDataPeerBrTracker::NetDataPeerBrTracker(Instance &aInstance)
+    : InstanceLocator(aInstance)
+{
+}
+
+uint16_t RoutingManager::NetDataPeerBrTracker::CountPeerBrs(uint32_t &aMinAge) const
+{
+    uint32_t uptime = Uptime::MsecToSec(Get<Uptime>().GetUptime());
+    uint16_t count  = 0;
+
+    aMinAge = NumericLimits<uint16_t>::kMax;
+
+    for (const PeerBr &peerBr : mPeerBrs)
+    {
+        count++;
+        aMinAge = Min(aMinAge, peerBr.GetAge(uptime));
+    }
+
+    if (count == 0)
+    {
+        aMinAge = 0;
+    }
+
+    return count;
+}
+
+Error RoutingManager::NetDataPeerBrTracker::GetNext(PrefixTableIterator &aIterator, PeerBrEntry &aEntry) const
+{
+    using Iterator = RxRaTracker::Iterator;
+
+    Iterator &iterator = static_cast<Iterator &>(aIterator);
+    Error     error;
+
+    SuccessOrExit(error = iterator.AdvanceToNextPeerBr(mPeerBrs.GetHead()));
+
+    aEntry.mRloc16 = iterator.GetPeerBrEntry()->mRloc16;
+    aEntry.mAge    = iterator.GetPeerBrEntry()->GetAge(iterator.GetInitUptime());
+
+exit:
+    return error;
+}
+
+void RoutingManager::NetDataPeerBrTracker::HandleNotifierEvents(Events aEvents)
+{
+    NetworkData::Rlocs rlocs;
+
+    VerifyOrExit(aEvents.ContainsAny(kEventThreadNetdataChanged | kEventThreadRoleChanged));
+
+    Get<NetworkData::Leader>().FindRlocs(NetworkData::kBrProvidingExternalIpConn, NetworkData::kAnyRole, rlocs);
+
+    // Remove `PeerBr` entries no longer found in Network Data,
+    // or they match the device RLOC16. Then allocate and add
+    // entries for newly discovered peers.
+
+    mPeerBrs.RemoveAndFreeAllMatching(PeerBr::Filter(rlocs));
+    mPeerBrs.RemoveAndFreeAllMatching(Get<Mle::Mle>().GetRloc16());
+
+    for (uint16_t rloc16 : rlocs)
+    {
+        PeerBr *newEntry;
+
+        if (Get<Mle::Mle>().HasRloc16(rloc16) || mPeerBrs.ContainsMatching(rloc16))
+        {
+            continue;
+        }
+
+        newEntry = PeerBr::Allocate();
+        VerifyOrExit(newEntry != nullptr, LogWarn("Failed to allocate `PeerBr` entry"));
+
+        newEntry->mRloc16       = rloc16;
+        newEntry->mDiscoverTime = Uptime::MsecToSec(Get<Uptime>().GetUptime());
+
+        mPeerBrs.Push(*newEntry);
+    }
+
+exit:
+    return;
+}
+
+#endif // OPENTHREAD_CONFIG_BORDER_ROUTING_TRACK_PEER_BR_INFO_ENABLE
 
 //---------------------------------------------------------------------------------------------------------------------
 // RxRaTracker
@@ -1850,6 +1942,32 @@ exit:
     return error;
 }
 
+#if OPENTHREAD_CONFIG_BORDER_ROUTING_TRACK_PEER_BR_INFO_ENABLE
+
+Error RoutingManager::RxRaTracker::Iterator::AdvanceToNextPeerBr(const PeerBr *aPeerBrsHead)
+{
+    Error error = kErrorNone;
+
+    if (GetType() == kUnspecified)
+    {
+        SetType(kPeerBrIterator);
+        SetEntry(aPeerBrsHead);
+    }
+    else
+    {
+        VerifyOrExit(GetType() == kPeerBrIterator, error = kErrorInvalidArgs);
+        VerifyOrExit(GetPeerBrEntry() != nullptr, error = kErrorNotFound);
+        SetEntry(GetPeerBrEntry()->GetNext());
+    }
+
+    VerifyOrExit(GetPeerBrEntry() != nullptr, error = kErrorNotFound);
+
+exit:
+    return error;
+}
+
+#endif // OPENTHREAD_CONFIG_BORDER_ROUTING_TRACK_PEER_BR_INFO_ENABLE
+
 //---------------------------------------------------------------------------------------------------------------------
 // RxRaTracker::Router
 
@@ -1916,6 +2034,17 @@ bool RoutingManager::RxRaTracker::Router::Matches(const EmptyChecker &aChecker)
     return !hasFlags && mOnLinkPrefixes.IsEmpty() && mRoutePrefixes.IsEmpty();
 }
 
+bool RoutingManager::RxRaTracker::Router::IsPeerBr(void) const
+{
+    // Determines whether the router is a peer BR (connected to the
+    // same Thread mesh network). It must have at least one entry
+    // (on-link or route) and all entries should be marked to be
+    // disregarded. While this model is generally effective to detect
+    // peer BRs, it may not be 100% accurate in all scenarios.
+
+    return mAllEntriesDisregarded && !(mOnLinkPrefixes.IsEmpty() && mRoutePrefixes.IsEmpty());
+}
+
 void RoutingManager::RxRaTracker::Router::CopyInfoTo(RouterEntry &aEntry, TimeMilli aNow, uint32_t aUptime) const
 {
     aEntry.mAddress                  = mAddress;
@@ -1926,6 +2055,7 @@ void RoutingManager::RxRaTracker::Router::CopyInfoTo(RouterEntry &aEntry, TimeMi
     aEntry.mStubRouterFlag           = mStubRouterFlag;
     aEntry.mIsLocalDevice            = mIsLocalDevice;
     aEntry.mIsReachable              = IsReachable();
+    aEntry.mIsPeerBr                 = IsPeerBr();
 }
 
 //---------------------------------------------------------------------------------------------------------------------
