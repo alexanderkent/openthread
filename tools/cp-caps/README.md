@@ -41,7 +41,7 @@ $ git clone git@github.com:openthread/ot-nrf528xx.git
 $ cd ot-nrf528xx/
 $ git submodule update --init
 $ ./script/bootstrap
-$ ./script/build nrf52840 UART_trans -DOT_DIAGNOSTIC=ON -DOT_CSL_RECEIVER=ON
+$ ./script/build nrf52840 UART_trans -DOT_DIAGNOSTIC=ON -DOT_CSL_RECEIVER=ON -DOT_LINK_METRICS_INITIATOR=ON -DOT_LINK_METRICS_SUBJECT=ON
 $ arm-none-eabi-objcopy -O ihex build/bin/ot-cli-ftd ot-cli-ftd.hex
 $ nrfjprog -f nrf52 --chiperase --program ot-cli-ftd.hex --reset
 ```
@@ -54,23 +54,28 @@ Show help info.
 
 ```bash
 $ python3 ./tools/cp-caps/rcp_caps_test.py -h
-usage: rcp_caps_test.py [-h] [-c] [-d] [-p] [-v]
+usage: rcp_caps_test.py [-h] [-c] [-l] [-d] [-f] [-p] [-t] [-v] [-D]
 
 This script is used for testing RCP capabilities.
 
 options:
   -h, --help           show this help message and exit
   -c, --csl            test whether the RCP supports CSL transmitter
+  -l, --link-metrics   test whether the RCP supports link metrics
   -d, --diag-commands  test whether the RCP supports all diag commands
+  -f, --frame-format   test whether the RCP supports 802.15.4 frames of all formats
   -p, --data-poll      test whether the RCP supports data poll
-  -v, --verbose        output verbose information
+  -t, --throughput     test Thread network 1-hop throughput
+  -v, --version        output version
+  -D, --debug          output debug information
 
 Device Interfaces:
-  DUT_SSH=<device_ip>            Connect to the DUT via ssh
   DUT_ADB_TCP=<device_ip>        Connect to the DUT via adb tcp
   DUT_ADB_USB=<serial_number>    Connect to the DUT via adb usb
-  REF_CLI_SERIAL=<serial_device> Connect to the reference device via cli serial port
+  DUT_CLI_SERIAL=<serial_device> Connect to the DUT via cli serial port
+  DUT_SSH=<device_ip>            Connect to the DUT via ssh
   REF_ADB_USB=<serial_number>    Connect to the reference device via adb usb
+  REF_CLI_SERIAL=<serial_device> Connect to the reference device via cli serial port
   REF_SSH=<device_ip>            Connect to the reference device via ssh
 
 Example:
@@ -79,7 +84,7 @@ Example:
 
 ### Test Diag Commands
 
-The parameter `-d` or `--diag-commands` starts to test all diag commands.
+The option `-d` or `--diag-commands` tests all diag commands.
 
 Following environment variables are used to configure diag command parameters:
 
@@ -128,7 +133,7 @@ diag gpio set 2 1 ---------------------------------------- NotSupported
 
 ### Test CSL Transmitter
 
-The parameter `-c` or `--csl` starts to test whether the RCP supports the CSL transmitter.
+The option `-c` or `--csl` tests whether the RCP supports the CSL transmitter.
 
 ```bash
 $ DUT_ADB_USB=TW69UCKFZTGM95OR REF_CLI_SERIAL=/dev/ttyACM0 python3 ./tools/cp-caps/rcp_caps_test.py -c
@@ -137,10 +142,79 @@ CSL Transmitter ------------------------------------------ OK
 
 ### Test Data Poll
 
-The parameter `-p` or `--data-poll` starts to test whether the RCP supports data poll.
+The option `-p` or `--data-poll` tests whether the RCP supports data poll.
 
 ```bash
 $ DUT_ADB_USB=1269UCKFZTAM95OR REF_CLI_SERIAL=/dev/ttyACM0 python3 ./tools/cp-caps/rcp_caps_test.py -p
 Data Poll Parent ----------------------------------------- OK
 Data Poll Child ------------------------------------------ OK
+```
+
+### Test Link Metrics
+
+The option `-l` or `--link-metrics` tests whether the RCP supports link metrics.
+
+```bash
+$ DUT_ADB_USB=1269UCKFZTAM95OR REF_CLI_SERIAL=/dev/ttyACM0 python3 ./tools/cp-caps/rcp_caps_test.py -l
+Link Metrics Initiator ----------------------------------- OK
+Link Metrics Subject ------------------------------------- OK
+```
+
+### Test Throughput
+
+The option `-t` or `--throughput` tests the Thread network 1-hop throughput of the DUT.
+
+```bash
+$ DUT_ADB_USB=1269UCKFZTAM95OR REF_ADB_USB=44061HFAG01AQK python3 ./tools/cp-caps/rcp_caps_test.py -t
+Throughput ----------------------------------------------- 75.6 Kbits/sec
+```
+
+### Test Frame Format
+
+The option `-f` or `--frame-format` tests whether the RCP supports sending and receiving 802.15.4 frames of all formats.
+
+```bash
+$ DUT_ADB_USB=1269UCKFZTAM95OR REF_CLI_SERIAL=/dev/ttyACM0 python3 ./tools/cp-caps/rcp_caps_test.py -f
+TX ver:2003,Cmd,seq,dst[addr:short,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+RX ver:2003,Cmd,seq,dst[addr:short,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+TX ver:2003,Bcon,seq,dst[addr:no,pan:no],src[addr:extd,pan:id],sec:no,ie:no,plen:30 ---------------- OK
+RX ver:2003,Bcon,seq,dst[addr:no,pan:no],src[addr:extd,pan:id],sec:no,ie:no,plen:30 ---------------- OK
+TX ver:2006,Cmd,seq,dst[addr:short,pan:id],src[addr:short,pan:no],sec:l5,ie:no,plen:0 -------------- OK
+RX ver:2006,Cmd,seq,dst[addr:short,pan:id],src[addr:short,pan:no],sec:l5,ie:no,plen:0 -------------- OK
+TX ver:2006,Cmd,seq,dst[addr:extd,pan:id],src[addr:extd,pan:no],sec:l5,ie:no,plen:0 ---------------- OK
+RX ver:2006,Cmd,seq,dst[addr:extd,pan:id],src[addr:extd,pan:no],sec:l5,ie:no,plen:0 ---------------- OK
+TX ver:2006,Data,seq,dst[addr:extd,pan:id],src[addr:extd,pan:id],sec:no,ie:no,plen:0 --------------- OK
+RX ver:2006,Data,seq,dst[addr:extd,pan:id],src[addr:extd,pan:id],sec:no,ie:no,plen:0 --------------- OK
+TX ver:2006,Data,seq,dst[addr:short,pan:id],src[addr:short,pan:id],sec:no,ie:no,plen:0 ------------- OK
+RX ver:2006,Data,seq,dst[addr:short,pan:id],src[addr:short,pan:id],sec:no,ie:no,plen:0 ------------- OK
+TX ver:2006,Data,seq,dst[addr:extd,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+RX ver:2006,Data,seq,dst[addr:extd,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+TX ver:2006,Data,seq,dst[addr:short,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ---------------- OK
+RX ver:2006,Data,seq,dst[addr:short,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ---------------- OK
+TX ver:2015,Data,seq,dst[addr:no,pan:no],src[addr:no,pan:no],sec:no,ie:no,plen:0 ------------------- OK
+RX ver:2015,Data,seq,dst[addr:no,pan:no],src[addr:no,pan:no],sec:no,ie:no,plen:0 ------------------- OK
+TX ver:2015,Data,seq,dst[addr:no,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ------------------- OK
+RX ver:2015,Data,seq,dst[addr:no,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ------------------- OK
+TX ver:2015,Data,seq,dst[addr:extd,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+RX ver:2015,Data,seq,dst[addr:extd,pan:id],src[addr:no,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+TX ver:2015,Data,seq,dst[addr:extd,pan:no],src[addr:no,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+RX ver:2015,Data,seq,dst[addr:extd,pan:no],src[addr:no,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+TX ver:2015,Data,seq,dst[addr:no,pan:no],src[addr:extd,pan:id],sec:no,ie:no,plen:0 ----------------- OK
+RX ver:2015,Data,seq,dst[addr:no,pan:no],src[addr:extd,pan:id],sec:no,ie:no,plen:0 ----------------- OK
+TX ver:2015,Data,seq,dst[addr:no,pan:no],src[addr:extd,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+RX ver:2015,Data,seq,dst[addr:no,pan:no],src[addr:extd,pan:no],sec:no,ie:no,plen:0 ----------------- OK
+TX ver:2015,Data,seq,dst[addr:extd,pan:id],src[addr:extd,pan:no],sec:no,ie:no,plen:0 --------------- OK
+RX ver:2015,Data,seq,dst[addr:extd,pan:id],src[addr:extd,pan:no],sec:no,ie:no,plen:0 --------------- OK
+TX ver:2015,Data,seq,dst[addr:extd,pan:no],src[addr:extd,pan:no],sec:no,ie:no,plen:0 --------------- OK
+RX ver:2015,Data,seq,dst[addr:extd,pan:no],src[addr:extd,pan:no],sec:no,ie:no,plen:0 --------------- OK
+TX ver:2015,Data,seq,dst[addr:short,pan:id],src[addr:short,pan:id],sec:no,ie:no,plen:0 ------------- OK
+RX ver:2015,Data,seq,dst[addr:short,pan:id],src[addr:short,pan:id],sec:no,ie:no,plen:0 ------------- OK
+TX ver:2015,Data,seq,dst[addr:short,pan:id],src[addr:extd,pan:id],sec:no,ie:no,plen:0 -------------- OK
+RX ver:2015,Data,seq,dst[addr:short,pan:id],src[addr:extd,pan:id],sec:no,ie:no,plen:0 -------------- OK
+TX ver:2015,Data,seq,dst[addr:extd,pan:id],src[addr:short,pan:id],sec:no,ie:no,plen:0 -------------- OK
+RX ver:2015,Data,seq,dst[addr:extd,pan:id],src[addr:short,pan:id],sec:no,ie:no,plen:0 -------------- OK
+TX ver:2015,Data,seq,dst[addr:short,pan:id],src[addr:short,pan:id],sec:no,ie[csl],plen:0 ----------- OK
+RX ver:2015,Data,seq,dst[addr:short,pan:id],src[addr:short,pan:id],sec:no,ie[csl],plen:0 ----------- OK
+TX ver:2015,Data,noseq,dst[addr:short,pan:id],src[addr:short,pan:id],sec:no,ie:no,plen:0 ----------- OK
+RX ver:2015,Data,noseq,dst[addr:short,pan:id],src[addr:short,pan:id],sec:no,ie:no,plen:0 ----------- OK
 ```

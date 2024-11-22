@@ -40,6 +40,7 @@
 
 #include <stdarg.h>
 
+#include <openthread/border_agent.h>
 #include <openthread/cli.h>
 #include <openthread/dataset.h>
 #include <openthread/dns_client.h>
@@ -91,7 +92,6 @@ namespace ot {
  *
  * @brief
  *   This namespace contains definitions for the CLI interpreter.
- *
  */
 namespace Cli {
 
@@ -102,7 +102,6 @@ extern "C" void otCliOutputFormat(const char *aFmt, ...);
 
 /**
  * Implements the CLI interpreter.
- *
  */
 class Interpreter : public OutputImplementer, public Utils
 {
@@ -138,7 +137,6 @@ public:
      * Returns a reference to the interpreter object.
      *
      * @returns A reference to the interpreter object.
-     *
      */
     static Interpreter &GetInterpreter(void)
     {
@@ -153,7 +151,6 @@ public:
      * @param[in]  aInstance  The OpenThread instance structure.
      * @param[in]  aCallback  A pointer to a callback method.
      * @param[in]  aContext   A pointer to a user context.
-     *
      */
     static void Initialize(otInstance *aInstance, otCliOutputCallback aCallback, void *aContext);
 
@@ -161,7 +158,6 @@ public:
      * Returns whether the interpreter is initialized.
      *
      * @returns  Whether the interpreter is initialized.
-     *
      */
     static bool IsInitialized(void) { return sInterpreter != nullptr; }
 
@@ -169,7 +165,6 @@ public:
      * Interprets a CLI command.
      *
      * @param[in]  aBuf        A pointer to a string.
-     *
      */
     void ProcessLine(char *aBuf);
 
@@ -314,9 +309,12 @@ private:
     void HandleSntpResponse(uint64_t aTime, otError aResult);
 #endif
 
-#if OPENTHREAD_CONFIG_BORDER_AGENT_ENABLE && OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
+#if OPENTHREAD_CONFIG_BORDER_AGENT_ENABLE
+    void OutputBorderAgentCounters(const otBorderAgentCounters &aCounters);
+#if OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
     static void HandleBorderAgentEphemeralKeyStateChange(void *aContext);
     void        HandleBorderAgentEphemeralKeyStateChange(void);
+#endif
 #endif
 
     static void HandleDetachGracefullyResult(void *aContext);
@@ -329,6 +327,11 @@ private:
 
 #if OPENTHREAD_CONFIG_CLI_REGISTER_IP6_RECV_CALLBACK
     static void HandleIp6Receive(otMessage *aMessage, void *aContext);
+#endif
+
+#if OPENTHREAD_CONFIG_WAKEUP_COORDINATOR_ENABLE
+    static void HandleWakeupResult(otError aError, void *aContext);
+    void        HandleWakeupResult(otError aError);
 #endif
 
 #endif // OPENTHREAD_FTD || OPENTHREAD_MTD

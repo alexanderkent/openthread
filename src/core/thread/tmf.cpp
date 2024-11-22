@@ -33,8 +33,7 @@
 
 #include "thread/tmf.hpp"
 
-#include "common/locator_getters.hpp"
-#include "net/ip6_types.hpp"
+#include "instance/instance.hpp"
 
 namespace ot {
 namespace Tmf {
@@ -274,7 +273,7 @@ Message::Priority Agent::DscpToPriority(uint8_t aDscp)
 #if OPENTHREAD_CONFIG_SECURE_TRANSPORT_ENABLE
 
 SecureAgent::SecureAgent(Instance &aInstance)
-    : Coap::CoapSecure(aInstance)
+    : Coap::CoapSecureBase(aInstance, kNoLinkSecurity)
 {
     SetResourceHandler(&HandleResource);
 }
@@ -311,11 +310,8 @@ bool SecureAgent::HandleResource(const char *aUriPath, Message &aMessage, const 
         Case(kUriCommissionerKeepAlive, MeshCoP::BorderAgent);
         Case(kUriRelayTx, MeshCoP::BorderAgent);
         Case(kUriCommissionerGet, MeshCoP::BorderAgent);
-        Case(kUriCommissionerSet, MeshCoP::BorderAgent);
         Case(kUriActiveGet, MeshCoP::BorderAgent);
-        Case(kUriActiveSet, MeshCoP::BorderAgent);
         Case(kUriPendingGet, MeshCoP::BorderAgent);
-        Case(kUriPendingSet, MeshCoP::BorderAgent);
         Case(kUriProxyTx, MeshCoP::BorderAgent);
 #endif
 

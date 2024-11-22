@@ -38,6 +38,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#include <openthread/link.h>
 #include <openthread/logging.h>
 #include <openthread/platform/diag.h>
 #include <openthread/platform/time.h>
@@ -111,14 +112,19 @@ RadioSpinel::RadioSpinel(void)
     , mVendorRestorePropertiesCallback(nullptr)
     , mVendorRestorePropertiesContext(nullptr)
 #endif
-    , mEnableRcpTimeSync(false)
+#if OPENTHREAD_SPINEL_CONFIG_COMPATIBILITY_ERROR_CALLBACK_ENABLE
+    , mCompatibilityErrorCallback(nullptr)
+    , mCompatibilityErrorContext(nullptr)
+#endif
+    , mTimeSyncEnabled(false)
+    , mTimeSyncOn(false)
     , mSpinelDriver(nullptr)
 {
     memset(&mRadioSpinelMetrics, 0, sizeof(mRadioSpinelMetrics));
     memset(&mCallbacks, 0, sizeof(mCallbacks));
 }
 
-void RadioSpinel::Init(bool          aSkipRcpCompatibilityCheck,
+void RadioSpinel::Init(bool          aSkipRcpVersionCheck,
                        bool          aSoftwareReset,
                        SpinelDriver *aSpinelDriver,
                        otRadioCaps   aRequiredRadioCaps,
@@ -134,7 +140,7 @@ void RadioSpinel::Init(bool          aSkipRcpCompatibilityCheck,
     mResetRadioOnStartup = aSoftwareReset;
 #endif
 
-    mEnableRcpTimeSync = aEnableRcpTimeSync;
+    mTimeSyncEnabled = aEnableRcpTimeSync;
 
     mSpinelDriver = aSpinelDriver;
     mSpinelDriver->SetFrameHandler(&HandleReceivedFrame, &HandleSavedFrame, this);
@@ -153,11 +159,12 @@ void RadioSpinel::Init(bool          aSkipRcpCompatibilityCheck,
         EXPECT_NO_ERROR(error = Set(SPINEL_PROP_RCP_LOG_CRASH_DUMP, nullptr));
     }
 
-    if (!aSkipRcpCompatibilityCheck)
+    if (!aSkipRcpVersionCheck)
     {
         SuccessOrDie(CheckRcpApiVersion(supportsRcpApiVersion, supportsRcpMinHostApiVersion));
-        SuccessOrDie(CheckRadioCapabilities(aRequiredRadioCaps));
     }
+
+    SuccessOrDie(CheckRadioCapabilities(aRequiredRadioCaps));
 
     mRxRadioFrame.mPsdu  = mRxPsdu;
     mTxRadioFrame.mPsdu  = mTxPsdu;
@@ -196,7 +203,7 @@ otError RadioSpinel::CheckSpinelVersion(void)
     {
         LogCrit("Spinel version mismatch - Posix:%d.%d, RCP:%d.%d", SPINEL_PROTOCOL_VERSION_THREAD_MAJOR,
                 SPINEL_PROTOCOL_VERSION_THREAD_MINOR, versionMajor, versionMinor);
-        DieNow(OT_EXIT_RADIO_SPINEL_INCOMPATIBLE);
+        HandleCompatibilityError();
     }
 
 exit:
@@ -208,13 +215,13 @@ void RadioSpinel::InitializeCaps(bool &aSupportsRcpApiVersion, bool &aSupportsRc
     if (!GetSpinelDriver().CoprocessorHasCap(SPINEL_CAP_CONFIG_RADIO))
     {
         LogCrit("The co-processor isn't a RCP!");
-        DieNow(OT_EXIT_RADIO_SPINEL_INCOMPATIBLE);
+        HandleCompatibilityError();
     }
 
     if (!GetSpinelDriver().CoprocessorHasCap(SPINEL_CAP_MAC_RAW))
     {
         LogCrit("RCP capability list does not include support for radio/raw mode");
-        DieNow(OT_EXIT_RADIO_SPINEL_INCOMPATIBLE);
+        HandleCompatibilityError();
     }
 
     sSupportsLogStream            = GetSpinelDriver().CoprocessorHasCap(SPINEL_CAP_OPENTHREAD_LOG_METADATA);
@@ -249,7 +256,7 @@ otError RadioSpinel::CheckRadioCapabilities(otRadioCaps aRequiredRadioCaps)
             }
         }
 
-        DieNow(OT_EXIT_RADIO_SPINEL_INCOMPATIBLE);
+        HandleCompatibilityError();
     }
 
 exit:
@@ -277,7 +284,7 @@ otError RadioSpinel::CheckRcpApiVersion(bool aSupportsRcpApiVersion, bool aSuppo
             LogCrit("RCP and host are using incompatible API versions");
             LogCrit("RCP API Version %u is older than min required by host %u", rcpApiVersion,
                     SPINEL_MIN_HOST_SUPPORTED_RCP_API_VERSION);
-            DieNow(OT_EXIT_RADIO_SPINEL_INCOMPATIBLE);
+            HandleCompatibilityError();
         }
     }
 
@@ -297,7 +304,7 @@ otError RadioSpinel::CheckRcpApiVersion(bool aSupportsRcpApiVersion, bool aSuppo
             LogCrit("RCP and host are using incompatible API versions");
             LogCrit("RCP requires min host API version %u but host is older and at version %u", minHostRcpApiVersion,
                     SPINEL_RCP_API_VERSION);
-            DieNow(OT_EXIT_RADIO_SPINEL_INCOMPATIBLE);
+            HandleCompatibilityError();
         }
     }
 
@@ -702,7 +709,6 @@ otError RadioSpinel::ParseRadioFrame(otRadioFrame   &aFrame,
         if (flags & SPINEL_MD_FLAG_ACKED_SEC)
         {
             mMacFrameCounterSet = true;
-            mMacFrameCounter    = aFrame.mInfo.mRxInfo.mAckFrameCounter;
         }
 #endif
     }
@@ -798,7 +804,7 @@ void RadioSpinel::Process(const void *aContext)
     ProcessRadioStateMachine();
     RecoverFromRcpFailure();
 
-    if (mEnableRcpTimeSync)
+    if (mTimeSyncEnabled)
     {
         CalcRcpTimeOffset();
     }
@@ -835,6 +841,17 @@ otError RadioSpinel::SetShortAddress(uint16_t aAddress)
     EXPECT(mShortAddress != aAddress, NO_ACTION);
     EXPECT_NO_ERROR(error = Set(SPINEL_PROP_MAC_15_4_SADDR, SPINEL_DATATYPE_UINT16_S, aAddress));
     mShortAddress = aAddress;
+
+exit:
+    return error;
+}
+
+otError RadioSpinel::SetAlternateShortAddress(uint16_t aAddress)
+{
+    otError error = OT_ERROR_NONE;
+
+    VerifyOrExit(sRadioCaps & OT_RADIO_CAPS_ALT_SHORT_ADDR);
+    error = Set(SPINEL_PROP_MAC_15_4_ALT_SADDR, SPINEL_DATATYPE_UINT16_S, aAddress);
 
 exit:
     return error;
@@ -925,7 +942,6 @@ otError RadioSpinel::SetMacFrameCounter(uint32_t aMacFrameCounter, bool aSetIfLa
                                 aMacFrameCounter, aSetIfLarger));
 #if OPENTHREAD_SPINEL_CONFIG_RCP_RESTORATION_MAX_COUNT > 0
     mMacFrameCounterSet = true;
-    mMacFrameCounter    = aMacFrameCounter;
 #endif
 
 exit:
@@ -981,10 +997,13 @@ otError RadioSpinel::AddSrcMatchShortEntry(uint16_t aShortAddress)
 {
     otError error;
 
+#if OPENTHREAD_SPINEL_CONFIG_RCP_RESTORATION_MAX_COUNT > 0
+    EXPECT(mSrcMatchShortEntryCount < OPENTHREAD_SPINEL_CONFIG_MAX_SRC_MATCH_ENTRIES, error = OT_ERROR_NO_BUFS);
+#endif
+
     EXPECT_NO_ERROR(error = Insert(SPINEL_PROP_MAC_SRC_MATCH_SHORT_ADDRESSES, SPINEL_DATATYPE_UINT16_S, aShortAddress));
 
 #if OPENTHREAD_SPINEL_CONFIG_RCP_RESTORATION_MAX_COUNT > 0
-    assert(mSrcMatchShortEntryCount < OPENTHREAD_CONFIG_MLE_MAX_CHILDREN);
 
     for (int i = 0; i < mSrcMatchShortEntryCount; ++i)
     {
@@ -1005,11 +1024,14 @@ otError RadioSpinel::AddSrcMatchExtEntry(const otExtAddress &aExtAddress)
 {
     otError error;
 
+#if OPENTHREAD_SPINEL_CONFIG_RCP_RESTORATION_MAX_COUNT > 0
+    EXPECT(mSrcMatchExtEntryCount < OPENTHREAD_SPINEL_CONFIG_MAX_SRC_MATCH_ENTRIES, error = OT_ERROR_NO_BUFS);
+#endif
+
     EXPECT_NO_ERROR(error =
                         Insert(SPINEL_PROP_MAC_SRC_MATCH_EXTENDED_ADDRESSES, SPINEL_DATATYPE_EUI64_S, aExtAddress.m8));
 
 #if OPENTHREAD_SPINEL_CONFIG_RCP_RESTORATION_MAX_COUNT > 0
-    assert(mSrcMatchExtEntryCount < OPENTHREAD_CONFIG_MLE_MAX_CHILDREN);
 
     for (int i = 0; i < mSrcMatchExtEntryCount; ++i)
     {
@@ -1577,7 +1599,6 @@ void RadioSpinel::HandleTransmitDone(uint32_t          aCommand,
 
 #if OPENTHREAD_SPINEL_CONFIG_RCP_RESTORATION_MAX_COUNT > 0
         mMacFrameCounterSet = true;
-        mMacFrameCounter    = frameCounter;
 #endif
     }
 
@@ -1644,26 +1665,30 @@ otError RadioSpinel::Transmit(otRadioFrame &aFrame)
 #endif // OPENTHREAD_CONFIG_MAC_HEADER_IE_SUPPORT && OPENTHREAD_CONFIG_TIME_SYNC_ENABLE
 
     // `otPlatRadioTxStarted()` is triggered immediately for now, which may be earlier than real started time.
-    mCallbacks.mTxStarted(mInstance, mTransmitFrame);
+    if (mCallbacks.mTxStarted != nullptr)
+    {
+        mCallbacks.mTxStarted(mInstance, mTransmitFrame);
+    }
 
     error = Request(SPINEL_CMD_PROP_VALUE_SET, SPINEL_PROP_STREAM_RAW,
-                    SPINEL_DATATYPE_DATA_WLEN_S                                      // Frame data
-                        SPINEL_DATATYPE_UINT8_S                                      // Channel
-                            SPINEL_DATATYPE_UINT8_S                                  // MaxCsmaBackoffs
-                                SPINEL_DATATYPE_UINT8_S                              // MaxFrameRetries
-                                    SPINEL_DATATYPE_BOOL_S                           // CsmaCaEnabled
-                                        SPINEL_DATATYPE_BOOL_S                       // IsHeaderUpdated
-                                            SPINEL_DATATYPE_BOOL_S                   // IsARetx
-                                                SPINEL_DATATYPE_BOOL_S               // IsSecurityProcessed
-                                                    SPINEL_DATATYPE_UINT32_S         // TxDelay
-                                                        SPINEL_DATATYPE_UINT32_S     // TxDelayBaseTime
-                                                            SPINEL_DATATYPE_UINT8_S, // RxChannelAfterTxDone
+                    SPINEL_DATATYPE_DATA_WLEN_S                                         // Frame data
+                        SPINEL_DATATYPE_UINT8_S                                         // Channel
+                            SPINEL_DATATYPE_UINT8_S                                     // MaxCsmaBackoffs
+                                SPINEL_DATATYPE_UINT8_S                                 // MaxFrameRetries
+                                    SPINEL_DATATYPE_BOOL_S                              // CsmaCaEnabled
+                                        SPINEL_DATATYPE_BOOL_S                          // IsHeaderUpdated
+                                            SPINEL_DATATYPE_BOOL_S                      // IsARetx
+                                                SPINEL_DATATYPE_BOOL_S                  // IsSecurityProcessed
+                                                    SPINEL_DATATYPE_UINT32_S            // TxDelay
+                                                        SPINEL_DATATYPE_UINT32_S        // TxDelayBaseTime
+                                                            SPINEL_DATATYPE_UINT8_S     // RxChannelAfterTxDone
+                                                                SPINEL_DATATYPE_INT8_S, // TxPower
                     mTransmitFrame->mPsdu, mTransmitFrame->mLength, mTransmitFrame->mChannel,
                     mTransmitFrame->mInfo.mTxInfo.mMaxCsmaBackoffs, mTransmitFrame->mInfo.mTxInfo.mMaxFrameRetries,
                     mTransmitFrame->mInfo.mTxInfo.mCsmaCaEnabled, mTransmitFrame->mInfo.mTxInfo.mIsHeaderUpdated,
                     mTransmitFrame->mInfo.mTxInfo.mIsARetx, mTransmitFrame->mInfo.mTxInfo.mIsSecurityProcessed,
                     mTransmitFrame->mInfo.mTxInfo.mTxDelay, mTransmitFrame->mInfo.mTxInfo.mTxDelayBaseTime,
-                    mTransmitFrame->mInfo.mTxInfo.mRxChannelAfterTxDone);
+                    mTransmitFrame->mInfo.mTxInfo.mRxChannelAfterTxDone, mTransmitFrame->mInfo.mTxInfo.mTxPower);
 
     if (error == OT_ERROR_NONE)
     {
@@ -1703,6 +1728,20 @@ otError RadioSpinel::Receive(uint8_t aChannel)
     }
 
     mState = kStateReceive;
+
+exit:
+    return error;
+}
+
+otError RadioSpinel::ReceiveAt(uint64_t aWhen, uint32_t aDuration, uint8_t aChannel)
+{
+    otError error = OT_ERROR_NONE;
+
+    EXPECT(mState != kStateDisabled, error = OT_ERROR_INVALID_STATE);
+
+    error = Set(SPINEL_PROP_MAC_RX_AT, SPINEL_DATATYPE_UINT64_S SPINEL_DATATYPE_UINT32_S SPINEL_DATATYPE_UINT8_S, aWhen,
+                aDuration, aChannel);
+    EXPECT_NO_ERROR(error);
 
 exit:
     return error;
@@ -1919,6 +1958,7 @@ void RadioSpinel::CalcRcpTimeOffset(void)
      *         D = T1' - ((T0 + T2)/ 2)
      */
 
+    EXPECT(mTimeSyncOn, NO_ACTION);
     EXPECT(!mIsTimeSynced || (otPlatTimeGet() >= GetNextRadioTimeRecalcStart()), NO_ACTION);
 
     LogDebg("Trying to get RCP time offset");
@@ -2148,7 +2188,7 @@ void RadioSpinel::RestoreProperties(void)
 
     if (mMacFrameCounterSet)
     {
-        // There is a chance that radio/RCP has used some counters after `mMacFrameCounter` (for enh ack) and they
+        // There is a chance that radio/RCP has used some counters after otLinkGetFrameCounter() (for enh ack) and they
         // are in queue to be sent to host (not yet processed by host RadioSpinel). Here we add some guard jump
         // when we restore the frame counter.
         // Consider the worst case: the radio/RCP continuously receives the shortest data frame and replies with the
@@ -2160,8 +2200,8 @@ void RadioSpinel::RestoreProperties(void)
         // CounterGuard: 2000ms(Timeout) / [(28bytes(Data) + 29bytes(Ack)) * 32us/byte + 192us(Ifs)] = 992
         static constexpr uint16_t kFrameCounterGuard = 1000;
 
-        SuccessOrDie(
-            Set(SPINEL_PROP_RCP_MAC_FRAME_COUNTER, SPINEL_DATATYPE_UINT32_S, mMacFrameCounter + kFrameCounterGuard));
+        SuccessOrDie(Set(SPINEL_PROP_RCP_MAC_FRAME_COUNTER, SPINEL_DATATYPE_UINT32_S,
+                         otLinkGetFrameCounter(mInstance) + kFrameCounterGuard));
     }
 
     for (int i = 0; i < mSrcMatchShortEntryCount; ++i)
@@ -2231,7 +2271,7 @@ void RadioSpinel::RestoreProperties(void)
     }
 #endif
 
-    if (mEnableRcpTimeSync)
+    if (mTimeSyncEnabled)
     {
         CalcRcpTimeOffset();
     }
@@ -2394,6 +2434,25 @@ exit:
     return error;
 }
 #endif // OPENTHREAD_CONFIG_PLATFORM_POWER_CALIBRATION_ENABLE
+
+#if OPENTHREAD_SPINEL_CONFIG_COMPATIBILITY_ERROR_CALLBACK_ENABLE
+void RadioSpinel::SetCompatibilityErrorCallback(otRadioSpinelCompatibilityErrorCallback aCallback, void *aContext)
+{
+    mCompatibilityErrorCallback = aCallback;
+    mCompatibilityErrorContext  = aContext;
+}
+#endif
+
+void RadioSpinel::HandleCompatibilityError(void)
+{
+#if OPENTHREAD_SPINEL_CONFIG_COMPATIBILITY_ERROR_CALLBACK_ENABLE
+    if (mCompatibilityErrorCallback)
+    {
+        mCompatibilityErrorCallback(mCompatibilityErrorContext);
+    }
+#endif
+    DieNow(OT_EXIT_RADIO_SPINEL_INCOMPATIBLE);
+}
 
 } // namespace Spinel
 } // namespace ot

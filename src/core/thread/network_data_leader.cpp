@@ -33,22 +33,7 @@
 
 #include "network_data_leader.hpp"
 
-#include "coap/coap_message.hpp"
-#include "common/code_utils.hpp"
-#include "common/debug.hpp"
-#include "common/encoding.hpp"
-#include "common/locator_getters.hpp"
-#include "common/logging.hpp"
-#include "common/message.hpp"
-#include "common/random.hpp"
-#include "common/timer.hpp"
 #include "instance/instance.hpp"
-#include "mac/mac_types.hpp"
-#include "thread/lowpan.hpp"
-#include "thread/mle_router.hpp"
-#include "thread/thread_netif.hpp"
-#include "thread/thread_tlvs.hpp"
-#include "thread/uri_paths.hpp"
 
 namespace ot {
 namespace NetworkData {
@@ -130,6 +115,24 @@ Error Leader::GetPreferredNat64Prefix(ExternalRouteConfig &aConfig) const
     }
 
     return error;
+}
+
+bool Leader::IsNat64(const Ip6::Address &aAddress) const
+{
+    bool                isNat64  = false;
+    Iterator            iterator = kIteratorInit;
+    ExternalRouteConfig config;
+
+    while (GetNextExternalRoute(iterator, config) == kErrorNone)
+    {
+        if (config.mNat64 && config.GetPrefix().IsValidNat64() && aAddress.MatchesPrefix(config.GetPrefix()))
+        {
+            isNat64 = true;
+            break;
+        }
+    }
+
+    return isNat64;
 }
 
 const PrefixTlv *Leader::FindNextMatchingPrefixTlv(const Ip6::Address &aAddress, const PrefixTlv *aPrevTlv) const
@@ -561,6 +564,52 @@ void Leader::GetCommissioningDataset(MeshCoP::CommissioningDataset &aDataset) co
 
 exit:
     return;
+}
+
+Coap::Message *Leader::ProcessCommissionerGetRequest(const Coap::Message &aMessage) const
+{
+    Error          error    = kErrorNone;
+    Coap::Message *response = nullptr;
+    OffsetRange    offsetRange;
+
+    response = Get<Tmf::Agent>().NewPriorityResponseMessage(aMessage);
+    VerifyOrExit(response != nullptr, error = kErrorNoBufs);
+
+    if (Tlv::FindTlvValueOffsetRange(aMessage, MeshCoP::Tlv::kGet, offsetRange) == kErrorNone)
+    {
+        // Append the requested sub-TLV types given in Get TLV.
+
+        while (!offsetRange.IsEmpty())
+        {
+            uint8_t             type;
+            const MeshCoP::Tlv *subTlv;
+
+            IgnoreError(aMessage.Read(offsetRange, type));
+            offsetRange.AdvanceOffset(sizeof(type));
+
+            subTlv = FindCommissioningDataSubTlv(type);
+
+            if (subTlv != nullptr)
+            {
+                SuccessOrExit(error = subTlv->AppendTo(*response));
+            }
+        }
+    }
+    else
+    {
+        // Append all sub-TLVs in the Commissioning Data.
+
+        const CommissioningDataTlv *dataTlv = FindCommissioningData();
+
+        if (dataTlv != nullptr)
+        {
+            SuccessOrExit(error = response->AppendBytes(dataTlv->GetValue(), dataTlv->GetLength()));
+        }
+    }
+
+exit:
+    FreeAndNullMessageOnError(response, error);
+    return response;
 }
 
 Error Leader::FindBorderAgentRloc(uint16_t &aRloc16) const

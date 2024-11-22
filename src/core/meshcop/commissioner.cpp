@@ -35,22 +35,7 @@
 
 #if OPENTHREAD_FTD && OPENTHREAD_CONFIG_COMMISSIONER_ENABLE
 
-#include <stdio.h>
-
-#include "coap/coap_message.hpp"
-#include "common/array.hpp"
-#include "common/as_core_type.hpp"
-#include "common/encoding.hpp"
-#include "common/locator_getters.hpp"
-#include "common/string.hpp"
 #include "instance/instance.hpp"
-#include "meshcop/joiner.hpp"
-#include "meshcop/joiner_router.hpp"
-#include "meshcop/meshcop.hpp"
-#include "meshcop/meshcop_tlvs.hpp"
-#include "thread/thread_netif.hpp"
-#include "thread/thread_tlvs.hpp"
-#include "thread/uri_paths.hpp"
 
 namespace ot {
 namespace MeshCoP {
@@ -127,19 +112,20 @@ exit:
     return;
 }
 
-void Commissioner::HandleSecureAgentConnected(bool aConnected, void *aContext)
+void Commissioner::HandleSecureAgentConnectEvent(SecureTransport::ConnectEvent aEvent, void *aContext)
 {
-    static_cast<Commissioner *>(aContext)->HandleSecureAgentConnected(aConnected);
+    static_cast<Commissioner *>(aContext)->HandleSecureAgentConnectEvent(aEvent);
 }
 
-void Commissioner::HandleSecureAgentConnected(bool aConnected)
+void Commissioner::HandleSecureAgentConnectEvent(SecureTransport::ConnectEvent aEvent)
 {
-    if (!aConnected)
+    bool isConnected = (aEvent == SecureTransport::kConnected);
+    if (!isConnected)
     {
         mJoinerSessionTimer.Stop();
     }
 
-    SignalJoinerEvent(aConnected ? kJoinerEventConnected : kJoinerEventEnd, mActiveJoiner);
+    SignalJoinerEvent(isConnected ? kJoinerEventConnected : kJoinerEventEnd, mActiveJoiner);
 }
 
 Commissioner::Joiner *Commissioner::GetUnusedJoinerEntry(void)
@@ -287,7 +273,7 @@ Error Commissioner::Start(StateCallback aStateCallback, JoinerCallback aJoinerCa
 #endif
 
     SuccessOrExit(error = Get<Tmf::SecureAgent>().Start(SendRelayTransmit, this));
-    Get<Tmf::SecureAgent>().SetConnectedCallback(&Commissioner::HandleSecureAgentConnected, this);
+    Get<Tmf::SecureAgent>().SetConnectEventCallback(&Commissioner::HandleSecureAgentConnectEvent, this);
 
     mStateCallback.Set(aStateCallback, aCallbackContext);
     mJoinerCallback.Set(aJoinerCallback, aCallbackContext);
@@ -1131,9 +1117,13 @@ const char *Commissioner::StateToString(State aState)
         "active",   // (2) kStateActive
     };
 
-    static_assert(kStateDisabled == 0, "kStateDisabled value is incorrect");
-    static_assert(kStatePetition == 1, "kStatePetition value is incorrect");
-    static_assert(kStateActive == 2, "kStateActive value is incorrect");
+    struct EnumCheck
+    {
+        InitEnumValidatorCounter();
+        ValidateNextEnum(kStateDisabled);
+        ValidateNextEnum(kStatePetition);
+        ValidateNextEnum(kStateActive);
+    };
 
     return kStateStrings[aState];
 }

@@ -56,7 +56,6 @@ class Child;
 
 /**
  * Implements CSL tx scheduling functionality.
- *
  */
 class CslTxScheduler : public InstanceLocator, private NonCopyable
 {
@@ -70,7 +69,6 @@ public:
      * Defines all the child info required for scheduling CSL transmissions.
      *
      * `Child` class publicly inherits from this class.
-     *
      */
     class ChildInfo
     {
@@ -159,59 +157,9 @@ public:
     };
 
     /**
-     * Defines the callbacks used by the `CslTxScheduler`.
-     *
-     */
-    class Callbacks : public InstanceLocator
-    {
-        friend class CslTxScheduler;
-
-    private:
-        typedef IndirectSenderBase::FrameContext FrameContext;
-
-        /**
-         * Initializes the callbacks object.
-         *
-         * @param[in]  aInstance   A reference to the OpenThread instance.
-         *
-         */
-        explicit Callbacks(Instance &aInstance);
-
-        /**
-         * This callback method requests a frame to be prepared for CSL transmission to a given SSED.
-         *
-         * @param[out] aFrame    A reference to a MAC frame where the new frame would be placed.
-         * @param[out] aContext  A reference to a `FrameContext` where the context for the new frame would be placed.
-         * @param[in]  aChild    The child for which to prepare the frame.
-         *
-         * @retval kErrorNone   Frame was prepared successfully.
-         * @retval kErrorAbort  CSL transmission should be aborted (no frame for the child).
-         *
-         */
-        Error PrepareFrameForChild(Mac::TxFrame &aFrame, FrameContext &aContext, Child &aChild);
-
-        /**
-         * This callback method notifies the end of CSL frame transmission to a child.
-         *
-         * @param[in]  aFrame     The transmitted frame.
-         * @param[in]  aContext   The context associated with the frame when it was prepared.
-         * @param[in]  aError     kErrorNone when the frame was transmitted successfully,
-         *                        kErrorNoAck when the frame was transmitted but no ACK was received,
-         *                        kErrorChannelAccessFailure tx failed due to activity on the channel,
-         *                        kErrorAbort when transmission was aborted for other reasons.
-         * @param[in]  aChild     The child to which the frame was transmitted.
-         *
-         */
-        void HandleSentFrameToChild(const Mac::TxFrame &aFrame,
-                                    const FrameContext &aContext,
-                                    Error               aError,
-                                    Child              &aChild);
-    };
-    /**
      * Initializes the CSL tx scheduler object.
      *
      * @param[in]  aInstance   A reference to the OpenThread instance.
-     *
      */
     explicit CslTxScheduler(Instance &aInstance);
 
@@ -221,26 +169,25 @@ public:
      * It would then request the `Mac` to do the CSL tx. If the last CSL tx has been fired at `Mac` but hasn't been
      * done yet, and it's aborted, this method would set `mCslTxChild` to `nullptr` to notify the `HandleTransmitDone`
      * that the operation has been aborted.
-     *
      */
     void Update(void);
 
     /**
      * Clears all the states inside `CslTxScheduler` and the related states in each child.
-     *
      */
     void Clear(void);
 
     /**
      * Updates the value of `mCslFrameRequestAheadUs`, based on bus speed, bus latency
      * and `OPENTHREAD_CONFIG_MAC_CSL_REQUEST_AHEAD_US`.
-     *
      */
     void UpdateFrameRequestAhead(void);
 
 private:
     // Guard time in usec to add when checking delay while preparing the CSL frame for tx.
     static constexpr uint32_t kFramePreparationGuardInterval = 1500;
+
+    typedef IndirectSenderBase::FrameContext FrameContext;
 
     void RescheduleCslTx(void);
 
@@ -252,16 +199,14 @@ private:
 
     void HandleSentFrame(const Mac::TxFrame &aFrame, Error aError, Child &aChild);
 
-    uint32_t                mCslFrameRequestAheadUs;
-    Child                  *mCslTxChild;
-    Message                *mCslTxMessage;
-    Callbacks::FrameContext mFrameContext;
-    Callbacks               mCallbacks;
+    uint32_t     mCslFrameRequestAheadUs;
+    Child       *mCslTxChild;
+    Message     *mCslTxMessage;
+    FrameContext mFrameContext;
 };
 
 /**
  * @}
- *
  */
 
 } // namespace ot

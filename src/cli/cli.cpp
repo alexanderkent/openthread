@@ -411,6 +411,20 @@ template <> otError Interpreter::Process<Cmd("ba")>(Arg aArgs[])
 
         OutputLine("%s", Stringify(otBorderAgentGetState(GetInstancePtr()), kStateStrings));
     }
+    /**
+     * @cli ba disconnect
+     * @code
+     * ba disconnect
+     * Done
+     * @endcode
+     * @par
+     * Disconnects the Border Agent from any active secure sessions
+     * @sa otBorderAgentDisconnect
+     */
+    else if (aArgs[0] == "disconnect")
+    {
+        otBorderAgentDisconnect(GetInstancePtr());
+    }
 #if OPENTHREAD_CONFIG_BORDER_AGENT_ID_ENABLE
     /**
      * @cli ba id (get,set)
@@ -541,6 +555,36 @@ template <> otError Interpreter::Process<Cmd("ba")>(Arg aArgs[])
         }
     }
 #endif // OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
+    /**
+     * @cli ba counters
+     * @code
+     * ba counters
+     * epskcActivation: 0
+     * epskcApiDeactivation: 0
+     * epskcTimeoutDeactivation: 0
+     * epskcMaxAttemptDeactivation: 0
+     * epskcDisconnectDeactivation: 0
+     * epskcInvalidBaStateError: 0
+     * epskcInvalidArgsError: 0
+     * epskcStartSecureSessionError: 0
+     * epskcSecureSessionSuccess: 0
+     * epskcSecureSessionFailure: 0
+     * epskcCommissionerPetition: 0
+     * pskcSecureSessionSuccess: 0
+     * pskcSecureSessionFailure: 0
+     * pskcCommissionerPetition: 0
+     * mgmtActiveGet: 0
+     * mgmtPendingGet: 0
+     * Done
+     * @endcode
+     * @par
+     * Gets the border agent counters.
+     * @sa otBorderAgentGetCounters
+     */
+    else if (aArgs[0] == "counters")
+    {
+        OutputBorderAgentCounters(*otBorderAgentGetCounters(GetInstancePtr()));
+    }
     else
     {
         ExitNow(error = OT_ERROR_INVALID_COMMAND);
@@ -548,6 +592,28 @@ template <> otError Interpreter::Process<Cmd("ba")>(Arg aArgs[])
 
 exit:
     return error;
+}
+
+void Interpreter::OutputBorderAgentCounters(const otBorderAgentCounters &aCounters)
+{
+#if OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
+    OutputLine("epskcActivation: %lu ", ToUlong(aCounters.mEpskcActivations));
+    OutputLine("epskcApiDeactivation: %lu ", ToUlong(aCounters.mEpskcDeactivationClears));
+    OutputLine("epskcTimeoutDeactivation: %lu ", ToUlong(aCounters.mEpskcDeactivationTimeouts));
+    OutputLine("epskcMaxAttemptDeactivation: %lu ", ToUlong(aCounters.mEpskcDeactivationMaxAttempts));
+    OutputLine("epskcDisconnectDeactivation: %lu ", ToUlong(aCounters.mEpskcDeactivationDisconnects));
+    OutputLine("epskcInvalidBaStateError: %lu ", ToUlong(aCounters.mEpskcInvalidBaStateErrors));
+    OutputLine("epskcInvalidArgsError: %lu ", ToUlong(aCounters.mEpskcInvalidArgsErrors));
+    OutputLine("epskcStartSecureSessionError: %lu ", ToUlong(aCounters.mEpskcStartSecureSessionErrors));
+    OutputLine("epskcSecureSessionSuccess: %lu ", ToUlong(aCounters.mEpskcSecureSessionSuccesses));
+    OutputLine("epskcSecureSessionFailure: %lu ", ToUlong(aCounters.mEpskcSecureSessionFailures));
+    OutputLine("epskcCommissionerPetition: %lu ", ToUlong(aCounters.mEpskcCommissionerPetitions));
+#endif
+    OutputLine("pskcSecureSessionSuccess: %lu ", ToUlong(aCounters.mPskcSecureSessionSuccesses));
+    OutputLine("pskcSecureSessionFailure: %lu ", ToUlong(aCounters.mPskcSecureSessionFailures));
+    OutputLine("pskcCommissionerPetition: %lu ", ToUlong(aCounters.mPskcCommissionerPetitions));
+    OutputLine("mgmtActiveGet: %lu ", ToUlong(aCounters.mMgmtActiveGets));
+    OutputLine("mgmtPendingGet: %lu", ToUlong(aCounters.mMgmtPendingGets));
 }
 
 #if OPENTHREAD_CONFIG_BORDER_AGENT_EPHEMERAL_KEY_ENABLE
@@ -600,7 +666,6 @@ template <> otError Interpreter::Process<Cmd("nat64")>(Arg aArgs[])
      * @cparam nat64 @ca{enable|disable}
      * @par api_copy
      * #otNat64SetEnabled
-     *
      */
     if (ProcessEnableDisable(aArgs, otNat64SetEnabled) == OT_ERROR_NONE)
     {
@@ -635,7 +700,6 @@ template <> otError Interpreter::Process<Cmd("nat64")>(Arg aArgs[])
      * - `Active`: NAT64 translator is enabled and is translating packets.
      * @sa otNat64GetPrefixManagerState
      * @sa otNat64GetTranslatorState
-     *
      */
     else if (aArgs[0] == "state")
     {
@@ -667,7 +731,6 @@ template <> otError Interpreter::Process<Cmd("nat64")>(Arg aArgs[])
          * @endcode
          * @par api_copy
          * #otNat64GetCidr
-         *
          */
         if (aArgs[1].IsEmpty())
         {
@@ -685,7 +748,6 @@ template <> otError Interpreter::Process<Cmd("nat64")>(Arg aArgs[])
          * @endcode
          * @par api_copy
          * #otPlatNat64SetIp4Cidr
-         *
          */
         else
         {
@@ -708,7 +770,6 @@ template <> otError Interpreter::Process<Cmd("nat64")>(Arg aArgs[])
      * @endcode
      * @par api_copy
      * #otNat64GetNextAddressMapping
-     *
      */
     else if (aArgs[0] == "mappings")
     {
@@ -787,7 +848,6 @@ template <> otError Interpreter::Process<Cmd("nat64")>(Arg aArgs[])
      * Available when `OPENTHREAD_CONFIG_NAT64_TRANSLATOR_ENABLE` is enabled.
      * @sa otNat64GetCounters
      * @sa otNat64GetErrorCounters
-     *
      */
     else if (aArgs[0] == "counters")
     {
@@ -2248,6 +2308,7 @@ template <> otError Interpreter::Process<Cmd("counters")>(Arg aArgs[])
      * Attach Attempts: 1
      * Partition Id Changes: 1
      * Better Partition Attach Attempts: 0
+     * Better Parent Attach Attempts: 0
      * Parent Changes: 0
      * Done
      * @endcode
@@ -2274,6 +2335,7 @@ template <> otError Interpreter::Process<Cmd("counters")>(Arg aArgs[])
                 {&otMleCounters::mAttachAttempts, "Attach Attempts"},
                 {&otMleCounters::mPartitionIdChanges, "Partition Id Changes"},
                 {&otMleCounters::mBetterPartitionAttachAttempts, "Better Partition Attach Attempts"},
+                {&otMleCounters::mBetterParentAttachAttempts, "Better Parent Attach Attempts"},
                 {&otMleCounters::mParentChanges, "Parent Changes"},
             };
 
@@ -3609,7 +3671,7 @@ template <> otError Interpreter::Process<Cmd("deviceprops")>(Arg aArgs[])
     {
         otDeviceProperties props;
         bool               value;
-        uint8_t            index;
+        size_t             index;
 
         for (index = 0; index < OT_ARRAY_LENGTH(kPowerSupplyStrings); index++)
         {
@@ -3666,7 +3728,6 @@ template <> otError Interpreter::Process<Cmd("linkmetricsmgr")>(Arg aArgs[])
      * @cparam linkmetricsmgr @ca{enable|disable}
      * @par api_copy
      * #otLinkMetricsManagerSetEnabled
-     *
      */
     if (ProcessEnableDisable(aArgs, otLinkMetricsManagerIsEnabled, otLinkMetricsManagerSetEnabled) == OT_ERROR_NONE)
     {
@@ -3680,7 +3741,6 @@ template <> otError Interpreter::Process<Cmd("linkmetricsmgr")>(Arg aArgs[])
      * @endcode
      * @par api_copy
      * #otLinkMetricsManagerGetMetricsValueByExtAddr
-     *
      */
     else if (aArgs[0] == "show")
     {
@@ -7248,7 +7308,21 @@ template <> otError Interpreter::Process<Cmd("mac")>(Arg aArgs[])
 {
     otError error = OT_ERROR_NONE;
 
-    if (aArgs[0] == "retries")
+    /**
+     * @cli mac altshortaddr
+     * @code
+     * mac altshortaddr
+     * 0x4802
+     * Done
+     * @endcode
+     * @par api_copy
+     * #otLinkGetAlternateShortAddress
+     */
+    if (aArgs[0] == "altshortaddr")
+    {
+        OutputLine("0x%04x", otLinkGetAlternateShortAddress(GetInstancePtr()));
+    }
+    else if (aArgs[0] == "retries")
     {
         /**
          * @cli mac retries direct (get,set)
@@ -7524,6 +7598,20 @@ template <> otError Interpreter::Process<Cmd("trel")>(Arg aArgs[])
         {
             error = OT_ERROR_INVALID_ARGS;
         }
+    }
+    /**
+     * @cli trel port
+     * @code
+     * trel port
+     * 49153
+     * Done
+     * @endcode
+     * @par api_copy
+     * #otTrelGetUdpPort
+     */
+    else if (aArgs[0] == "port")
+    {
+        OutputLine("%hu", otTrelGetUdpPort(GetInstancePtr()));
     }
     else
     {
@@ -8140,6 +8228,143 @@ exit:
 
 #endif // OPENTHREAD_CONFIG_VERHOEFF_CHECKSUM_ENABLE
 
+#if OPENTHREAD_CONFIG_WAKEUP_COORDINATOR_ENABLE || OPENTHREAD_CONFIG_WAKEUP_END_DEVICE_ENABLE
+template <> otError Interpreter::Process<Cmd("wakeup")>(Arg aArgs[])
+{
+    otError error = OT_ERROR_NONE;
+
+    /**
+     * @cli wakeup channel (get,set)
+     * @code
+     * wakeup channel
+     * 12
+     * Done
+     * @endcode
+     * @code
+     * wakeup channel 12
+     * Done
+     * @endcode
+     * @cparam wakeup channel [@ca{channel}]
+     * Use `channel` to set the wake-up channel.
+     * @par
+     * Gets or sets the wake-up channel value.
+     * @sa otLinkGetWakeupChannel
+     * @sa otLinkSetWakeupChannel
+     */
+    if (aArgs[0] == "channel")
+    {
+        error = ProcessGetSet(aArgs + 1, otLinkGetWakeupChannel, otLinkSetWakeupChannel);
+    }
+#if OPENTHREAD_CONFIG_WAKEUP_END_DEVICE_ENABLE
+    /**
+     * @cli wakeup parameters (get,set)
+     * @code
+     * wakeup parameters
+     * interval: 1000000us
+     * duration: 8000us
+     * Done
+     * @endcode
+     * @code
+     * wakeup parameters 1000000 8000
+     * Done
+     * @endcode
+     * @cparam wakeup parameters @ca{interval} @ca{duration}
+     * @par
+     * Gets or sets the wake-up listen interval and wake-up listen duration values.
+     * @sa otLinkGetWakeUpListenParameters
+     * @sa otLinkSetWakeUpListenParameters
+     */
+    else if (aArgs[0] == "parameters")
+    {
+        uint32_t interval;
+        uint32_t duration;
+
+        if (aArgs[1].IsEmpty())
+        {
+            otLinkGetWakeupListenParameters(GetInstancePtr(), &interval, &duration);
+            OutputLine("interval: %luus", ToUlong(interval));
+            OutputLine("duration: %luus", ToUlong(duration));
+        }
+        else
+        {
+            SuccessOrExit(error = aArgs[1].ParseAsUint32(interval));
+            SuccessOrExit(error = aArgs[2].ParseAsUint32(duration));
+            error = otLinkSetWakeupListenParameters(GetInstancePtr(), interval, duration);
+        }
+    }
+    /**
+     * @cli wakeup listen (enable,disable)
+     * @code
+     * wakeup listen
+     * disabled
+     * Done
+     * @endcode
+     * @code
+     * wakeup listen enable
+     * Done
+     * @endcode
+     * @code
+     * wakeup listen
+     * enabled
+     * Done
+     * @endcode
+     * @cparam wakeup listen @ca{enable}
+     * @par
+     * Gets or sets current wake-up listening link state.
+     * @sa otLinkIsWakeupListenEnabled
+     * @sa otLinkSetWakeUpListenEnabled
+     */
+    else if (aArgs[0] == "listen")
+    {
+        error = ProcessEnableDisable(aArgs + 1, otLinkIsWakeupListenEnabled, otLinkSetWakeUpListenEnabled);
+    }
+#endif // OPENTHREAD_CONFIG_WAKEUP_END_DEVICE_ENABLE
+#if OPENTHREAD_CONFIG_WAKEUP_COORDINATOR_ENABLE
+    /**
+     * @cli wakeup wake
+     * @code
+     * wakeup wake 1ece0a6c4653a7c1 7500 1090
+     * Done
+     * @endcode
+     * @cparam wakeup wake @ca{extaddr} @ca{wakeup-interval} @ca{wakeup-duration}
+     * @par
+     * Wakes a Wake-up End Device identified by its MAC extended address, using the provided wake-up interval (in the
+     * units of microseconds), and wake-up duration (in the units of milliseconds).
+     */
+    else if (aArgs[0] == "wake")
+    {
+        otExtAddress extAddress;
+        uint16_t     wakeupIntervalUs;
+        uint16_t     wakeupDurationMs;
+
+        SuccessOrExit(error = aArgs[1].ParseAsHexString(extAddress.m8));
+        SuccessOrExit(error = aArgs[2].ParseAsUint16(wakeupIntervalUs));
+        SuccessOrExit(error = aArgs[3].ParseAsUint16(wakeupDurationMs));
+
+        SuccessOrExit(error = otThreadWakeup(GetInstancePtr(), &extAddress, wakeupIntervalUs, wakeupDurationMs,
+                                             HandleWakeupResult, this));
+        error = OT_ERROR_PENDING;
+    }
+#endif // OPENTHREAD_CONFIG_WAKEUP_COORDINATOR_ENABLE
+    else
+    {
+        ExitNow(error = OT_ERROR_INVALID_ARGS);
+    }
+
+exit:
+    return error;
+}
+#endif // OPENTHREAD_CONFIG_WAKEUP_COORDINATOR_ENABLE || OPENTHREAD_CONFIG_WAKEUP_END_DEVICE_ENABLE
+
+#if OPENTHREAD_CONFIG_WAKEUP_COORDINATOR_ENABLE
+void Interpreter::HandleWakeupResult(otError aError, void *aContext)
+{
+    static_cast<Interpreter *>(aContext)->HandleWakeupResult(aError);
+}
+
+void Interpreter::HandleWakeupResult(otError aError) { OutputResult(aError); }
+#endif
+
 #endif // OPENTHREAD_FTD || OPENTHREAD_MTD
 
 void Interpreter::Initialize(otInstance *aInstance, otCliOutputCallback aCallback, void *aContext)
@@ -8449,6 +8674,11 @@ otError Interpreter::ProcessCommand(Arg aArgs[])
 #endif
 #endif // OPENTHREAD_FTD || OPENTHREAD_MTD
         CmdEntry("version"),
+#if OPENTHREAD_FTD || OPENTHREAD_MTD
+#if OPENTHREAD_CONFIG_WAKEUP_COORDINATOR_ENABLE || OPENTHREAD_CONFIG_WAKEUP_END_DEVICE_ENABLE
+        CmdEntry("wakeup"),
+#endif
+#endif // OPENTHREAD_FTD || OPENTHREAD_MTD
     };
 
 #undef CmdEntry

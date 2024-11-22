@@ -33,7 +33,6 @@
 
 #include "radio.hpp"
 
-#include "common/locator_getters.hpp"
 #include "instance/instance.hpp"
 
 namespace ot {
@@ -62,6 +61,9 @@ void Radio::Callbacks::HandleBusLatencyChanged(void)
 {
 #if OPENTHREAD_FTD && OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
     Get<CslTxScheduler>().UpdateFrameRequestAhead();
+#endif
+#if OPENTHREAD_FTD && OPENTHREAD_CONFIG_WAKEUP_COORDINATOR_ENABLE
+    Get<WakeupTxScheduler>().UpdateFrameRequestAhead();
 #endif
 }
 

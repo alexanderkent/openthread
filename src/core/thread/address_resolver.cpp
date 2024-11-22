@@ -33,20 +33,7 @@
 
 #include "address_resolver.hpp"
 
-#include "coap/coap_message.hpp"
-#include "common/as_core_type.hpp"
-#include "common/code_utils.hpp"
-#include "common/debug.hpp"
-#include "common/encoding.hpp"
-#include "common/locator_getters.hpp"
-#include "common/log.hpp"
-#include "common/time.hpp"
 #include "instance/instance.hpp"
-#include "mac/mac_types.hpp"
-#include "thread/mesh_forwarder.hpp"
-#include "thread/mle_router.hpp"
-#include "thread/thread_netif.hpp"
-#include "thread/uri_paths.hpp"
 
 namespace ot {
 
@@ -493,18 +480,31 @@ Error AddressResolver::Resolve(const Ip6::Address &aEid, uint16_t &aRloc16, bool
 
     if ((entry != nullptr) && ((list == &mCachedList) || (list == &mSnoopedList)))
     {
+        bool isFresh;
+
         list->PopAfter(prev);
 
-        if (Get<RouterTable>().GetNextHop(entry->GetRloc16()) == Mle::kInvalidRloc16)
-        {
-            // If the `entry->GetRloc16()` is unreachable (there is no valid
-            // next hop towards it), we clear the entry so to start a new
-            // address query.
+        // If the `entry->GetRloc16()` is unreachable (there is no
+        // valid next hop towards it), it may be a stale entry. We
+        // clear the entry to allow new address query to be sent for
+        // it, unless the entry has been recently updated, i.e., we
+        // have recently received an `AddressNotify` for it and its
+        // `FreshnessTimeout` has not expired yet.
+        //
+        // The `FreshnessTimeout` check prevents repeated address
+        // query transmissions when mesh routes are not yet
+        // discovered (e.g., after initial attach) or if there is a
+        // temporary link issue.
 
+        isFresh = (list == &mCachedList) && !entry->IsFreshnessTimeoutZero();
+
+        if (!isFresh && (Get<RouterTable>().GetNextHop(entry->GetRloc16()) == Mle::kInvalidRloc16))
+        {
             mCacheEntryPool.Free(*entry);
             entry = nullptr;
         }
-        else
+
+        if (entry != nullptr)
         {
             // Push the entry at the head of cached list.
 
@@ -586,19 +586,15 @@ Error AddressResolver::ResolveUsingNetDataServices(const Ip6::Address &aEid, uin
     // service entries.  Returns `kErrorNone` and updates `aRloc16`
     // if successful, otherwise returns `kErrorNotFound`.
 
-    Error                                     error = kErrorNotFound;
-    NetworkData::Service::Manager::Iterator   iterator;
-    NetworkData::Service::DnsSrpUnicast::Info unicastInfo;
+    Error                                   error = kErrorNotFound;
+    NetworkData::Service::Manager::Iterator iterator;
+    NetworkData::Service::DnsSrpUnicastInfo unicastInfo;
+    NetworkData::Service::DnsSrpUnicastType type = NetworkData::Service::kAddrInServerData;
 
     VerifyOrExit(Get<Mle::Mle>().GetDeviceMode().GetNetworkDataType() == NetworkData::kFullSet);
 
-    while (Get<NetworkData::Service::Manager>().GetNextDnsSrpUnicastInfo(iterator, unicastInfo) == kErrorNone)
+    while (Get<NetworkData::Service::Manager>().GetNextDnsSrpUnicastInfo(iterator, type, unicastInfo) == kErrorNone)
     {
-        if (unicastInfo.mOrigin != NetworkData::Service::DnsSrpUnicast::kFromServerData)
-        {
-            continue;
-        }
-
         if (aEid == unicastInfo.mSockAddr.GetAddress())
         {
             aRloc16 = unicastInfo.mRloc16;
@@ -701,6 +697,8 @@ void AddressResolver::HandleTmf<kUriAddressNotify>(Coap::Message &aMessage, cons
     entry->SetRloc16(rloc16);
     entry->SetMeshLocalIid(meshLocalIid);
     entry->SetLastTransactionTime(lastTransactionTime);
+    entry->ResetFreshnessTimeout();
+    Get<TimeTicker>().RegisterReceiver(TimeTicker::kAddressResolver);
 
     list->PopAfter(prev);
     mCachedList.Push(*entry);
@@ -926,6 +924,15 @@ void AddressResolver::HandleTimeTick(void)
 {
     bool continueRxingTicks = false;
 
+    for (CacheEntry &entry : mCachedList)
+    {
+        if (!entry.IsFreshnessTimeoutZero())
+        {
+            entry.DecrementFreshnessTimeout();
+            continueRxingTicks = true;
+        }
+    }
+
     for (CacheEntry &entry : mSnoopedList)
     {
         if (entry.IsTimeoutZero())
@@ -1084,18 +1091,26 @@ void AddressResolver::LogCacheEntryChange(EntryChange       aChange,
         "removing eid",           // (7) kReasonRemovingEid
     };
 
-    static_assert(0 == kEntryAdded, "kEntryAdded value is incorrect");
-    static_assert(1 == kEntryUpdated, "kEntryUpdated value is incorrect");
-    static_assert(2 == kEntryRemoved, "kEntryRemoved value is incorrect");
+    struct ChangeEnumCheck
+    {
+        InitEnumValidatorCounter();
+        ValidateNextEnum(kEntryAdded);
+        ValidateNextEnum(kEntryUpdated);
+        ValidateNextEnum(kEntryRemoved);
+    };
 
-    static_assert(0 == kReasonQueryRequest, "kReasonQueryRequest value is incorrect");
-    static_assert(1 == kReasonSnoop, "kReasonSnoop value is incorrect");
-    static_assert(2 == kReasonReceivedNotification, "kReasonReceivedNotification value is incorrect");
-    static_assert(3 == kReasonRemovingRouterId, "kReasonRemovingRouterId value is incorrect");
-    static_assert(4 == kReasonRemovingRloc16, "kReasonRemovingRloc16 value is incorrect");
-    static_assert(5 == kReasonReceivedIcmpDstUnreachNoRoute, "kReasonReceivedIcmpDstUnreachNoRoute value is incorrect");
-    static_assert(6 == kReasonEvictingForNewEntry, "kReasonEvictingForNewEntry value is incorrect");
-    static_assert(7 == kReasonRemovingEid, "kReasonRemovingEid value is incorrect");
+    struct ReasonEnumCheck
+    {
+        InitEnumValidatorCounter();
+        ValidateNextEnum(kReasonQueryRequest);
+        ValidateNextEnum(kReasonSnoop);
+        ValidateNextEnum(kReasonReceivedNotification);
+        ValidateNextEnum(kReasonRemovingRouterId);
+        ValidateNextEnum(kReasonRemovingRloc16);
+        ValidateNextEnum(kReasonReceivedIcmpDstUnreachNoRoute);
+        ValidateNextEnum(kReasonEvictingForNewEntry);
+        ValidateNextEnum(kReasonRemovingEid);
+    };
 
     LogInfo("Cache entry %s: %s, 0x%04x%s%s - %s", kChangeStrings[aChange], aEntry.GetTarget().ToString().AsCString(),
             aEntry.GetRloc16(), (aList == nullptr) ? "" : ", list:", ListToString(aList), kReasonStrings[aReason]);
@@ -1128,7 +1143,8 @@ void AddressResolver::LogCacheEntryChange(EntryChange, Reason, const CacheEntry 
 void AddressResolver::CacheEntry::Init(Instance &aInstance)
 {
     InstanceLocatorInit::Init(aInstance);
-    mNextIndex = kNoNextIndex;
+    mNextIndex        = kNoNextIndex;
+    mFreshnessTimeout = 0;
 }
 
 AddressResolver::CacheEntry *AddressResolver::CacheEntry::GetNext(void)

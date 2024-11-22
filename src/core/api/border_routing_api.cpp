@@ -35,10 +35,6 @@
 
 #if OPENTHREAD_CONFIG_BORDER_ROUTING_ENABLE
 
-#include <openthread/border_routing.h>
-#include <openthread/platform/border_routing.h>
-
-#include "border_router/routing_manager.hpp"
 #include "instance/instance.hpp"
 
 using namespace ot;
@@ -217,6 +213,7 @@ uint16_t otBorderRoutingCountPeerBrs(otInstance *aInstance, uint32_t *aMinAge)
 #endif
 
 #if OPENTHREAD_CONFIG_BORDER_ROUTING_DHCP6_PD_ENABLE
+
 void otBorderRoutingDhcp6PdSetEnabled(otInstance *aInstance, bool aEnabled)
 {
     AsCoreType(aInstance).Get<BorderRouter::RoutingManager>().SetDhcp6PdEnabled(aEnabled);
@@ -233,6 +230,15 @@ void otBorderRoutingDhcp6PdSetRequestCallback(otInstance                        
                                               void                                 *aContext)
 {
     AsCoreType(aInstance).Get<BorderRouter::RoutingManager>().SetRequestDhcp6PdCallback(aCallback, aContext);
+}
+
+#endif
+
+#if OPENTHREAD_CONFIG_BORDER_ROUTING_TESTING_API_ENABLE
+
+void otBorderRoutingSetOnLinkPrefix(otInstance *aInstance, const otIp6Prefix *aPrefix)
+{
+    AsCoreType(aInstance).Get<BorderRouter::RoutingManager>().SetOnLinkPrefix(AsCoreType(aPrefix));
 }
 
 #endif

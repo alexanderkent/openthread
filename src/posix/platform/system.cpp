@@ -43,6 +43,7 @@
 #include <openthread/cli.h>
 #include <openthread/heap.h>
 #include <openthread/tasklet.h>
+#include <openthread/trel.h>
 #include <openthread/platform/alarm-milli.h>
 #include <openthread/platform/infra_if.h>
 #include <openthread/platform/logging.h>
@@ -65,7 +66,6 @@ bool        gDryRun   = false;
 
 CoprocessorType sCoprocessorType = OT_COPROCESSOR_UNKNOWN;
 
-#if OPENTHREAD_CONFIG_PLATFORM_NETIF_ENABLE || OPENTHREAD_CONFIG_BACKBONE_ROUTER_ENABLE
 static void processStateChange(otChangedFlags aFlags, void *aContext)
 {
     otInstance *instance = static_cast<otInstance *>(aContext);
@@ -80,8 +80,9 @@ static void processStateChange(otChangedFlags aFlags, void *aContext)
 #if OPENTHREAD_CONFIG_BACKBONE_ROUTER_ENABLE
     ot::Posix::InfraNetif::Get().HandleBackboneStateChange(instance, aFlags);
 #endif
+
+    platformRadioHandleStateChange(instance, aFlags);
 }
-#endif
 
 static const char *get802154RadioUrl(const otPlatformCoprocessorUrls &aUrls)
 {
@@ -138,7 +139,7 @@ void platformInitRcpMode(otPlatformConfig *aPlatformConfig)
     // For Dry-Run option, only init the co-processor.
     VerifyOrExit(!aPlatformConfig->mDryRun);
 
-#if OPENTHREAD_CONFIG_RADIO_LINK_TREL_ENABLE
+#if OPENTHREAD_CONFIG_RADIO_LINK_TREL_ENABLE && !OPENTHREAD_POSIX_CONFIG_TREL_SELECT_INFRA_IF
     platformTrelInit(getTrelRadioUrl(aPlatformConfig));
 #endif
     platformRandomInit();
@@ -155,6 +156,9 @@ void platformInitRcpMode(otPlatformConfig *aPlatformConfig)
 
 #if OPENTHREAD_CONFIG_PLATFORM_NETIF_ENABLE
     platformNetifInit(aPlatformConfig);
+#endif
+#if OPENTHREAD_CONFIG_DNS_UPSTREAM_QUERY_ENABLE
+    platformResolverInit();
 #endif
 
 #if OPENTHREAD_CONFIG_PLATFORM_UDP_ENABLE
@@ -245,9 +249,7 @@ void platformSetUp(otPlatformConfig *aPlatformConfig)
     ot::Posix::Daemon::Get().SetUp();
 #endif
 
-#if OPENTHREAD_CONFIG_PLATFORM_NETIF_ENABLE || OPENTHREAD_CONFIG_BACKBONE_ROUTER_ENABLE
     SuccessOrDie(otSetStateChangedCallback(gInstance, processStateChange, gInstance));
-#endif
 
 exit:
     return;
@@ -325,7 +327,8 @@ void platformDeinitRcpMode(void)
 #if OPENTHREAD_CONFIG_PLATFORM_NETIF_ENABLE
     platformNetifDeinit();
 #endif
-#if OPENTHREAD_CONFIG_RADIO_LINK_TREL_ENABLE
+#if OPENTHREAD_CONFIG_RADIO_LINK_TREL_ENABLE && !OPENTHREAD_POSIX_CONFIG_TREL_SELECT_INFRA_IF
+    otPlatTrelDisable(/* aInstance */ nullptr);
     platformTrelDeinit();
 #endif
 
@@ -370,7 +373,6 @@ void otSysDeinit(void)
  * @param[in,out]  aContext  A reference to the mainloop context.
  *
  * @returns The value returned from select().
- *
  */
 static int trySelect(otSysMainloopContext &aContext)
 {
@@ -409,6 +411,9 @@ void otSysMainloopUpdate(otInstance *aInstance, otSysMainloopContext *aMainloop)
 #endif
 #if OPENTHREAD_CONFIG_RADIO_LINK_TREL_ENABLE
     platformTrelUpdateFdSet(aMainloop);
+#endif
+#if OPENTHREAD_CONFIG_DNS_UPSTREAM_QUERY_ENABLE
+    platformResolverUpdateFdSet(aMainloop);
 #endif
 
     if (otTaskletsArePending(aInstance))
@@ -477,6 +482,9 @@ void otSysMainloopProcess(otInstance *aInstance, const otSysMainloopContext *aMa
     platformAlarmProcess(aInstance);
 #if OPENTHREAD_CONFIG_PLATFORM_NETIF_ENABLE
     platformNetifProcess(aMainloop);
+#endif
+#if OPENTHREAD_CONFIG_DNS_UPSTREAM_QUERY_ENABLE
+    platformResolverProcess(aMainloop);
 #endif
 }
 
